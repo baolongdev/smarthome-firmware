@@ -456,35 +456,21 @@ void updateDisplay() {
 // network state, lambdas, or dynamic layout.  This is the visual checkpoint
 // before enabling the full EspControl-inspired screen.
 void drawMinimalUI() {
-    display.fillScreen(TFT_BLACK);
-    display.setTextColor(TFT_WHITE, TFT_BLACK);
-    display.setTextSize(2);
+    // Start from the exact known-good reference color.  Use only text and
+    // plain rectangles here; some RGB-panel builds reset during rounded
+    // rectangle rendering, which leaves only a lit black screen.
+    display.fillScreen(TFT_GREEN);
+    display.setTextColor(TFT_BLACK, TFT_GREEN);
+    display.setTextSize(3);
     display.drawString("SMART HOME", 24, 18);
-    display.setTextSize(1);
-    display.setTextColor(0x8410, TFT_BLACK);
-    display.drawString("ESP32-4848S040  /  LCD ONLINE", 24, 43);
-
-    const int x[3] = {12, 166, 320};
-    const char* names[3] = {"L1  LIVING", "L2  HVAC", "L3  PLUGS"};
-    for (int i = 0; i < 3; ++i) {
-        display.fillRoundRect(x[i], 62, 148, 112, 12, 0x2104);
-        display.drawRoundRect(x[i], 62, 148, 112, 12, 0x4208);
-        display.setTextColor(TFT_WHITE, 0x2104);
-        display.setTextSize(1);
-        display.drawCenterString(names[i], x[i] + 74, 78);
-        display.setTextSize(2);
-        display.drawCenterString("OFF", x[i] + 74, 112);
-    }
-
-    display.fillRoundRect(12, 190, 456, 170, 12, 0x1082);
-    display.setTextColor(TFT_WHITE, 0x1082);
     display.setTextSize(2);
-    display.drawCenterString("TOUCH READY", 240, 218);
+    display.drawString("LCD UI ONLINE", 24, 62);
+    display.drawString("L1  LIVING   OFF", 24, 120);
+    display.drawString("L2  HVAC     OFF", 24, 160);
+    display.drawString("L3  PLUGS    OFF", 24, 200);
+    display.drawString("TOUCH READY", 24, 270);
     display.setTextSize(1);
-    display.drawCenterString("Touch anywhere to show X / Y", 240, 252);
-    display.drawCenterString("GT911  |  UI FIRST MODE", 240, 278);
-    display.setTextColor(0x8410, TFT_BLACK);
-    display.drawCenterString("Tap a relay card to test", 240, 430);
+    display.drawString("GT911 / UI FIRST MODE", 24, 315);
 }
 
 void drawUI() {
