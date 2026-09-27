@@ -282,16 +282,10 @@ void setupDisplay() {
     digitalWrite(PIN_DISP_BL, HIGH);
     Serial.printf("Backlight GPIO%d forced HIGH\n", PIN_DISP_BL);
     
-    // Keep the exact post-begin path from the known-good reference firmware.
-    // Rotation 0 and the default PWM brightness are already configured by the panel.
-    display.fillScreen(TFT_RED);  // Red screen = init working
-    delay(500);
-    display.fillScreen(TFT_GREEN); // Green screen = LCD test; keep visible
-    delay(2000);
-    display.fillScreen(TFT_BLUE);  // Blue screen = next step
-    delay(500);
-    display.fillScreen(TFT_BLACK);
-    
+    // Match the known-good reference flow exactly: begin(), backlight, then
+    // draw once.  Do not cycle red/green/blue/black here; that test sequence
+    // can leave this RGB panel showing only a lit black frame.
+    delay(50);
     Serial.println("Direct LCD drawing enabled (no extra Sprite)");
     Serial.println("=== Display Setup Complete ===");
 #if MINIMAL_LCD_UI
