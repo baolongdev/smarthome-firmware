@@ -57,7 +57,6 @@ public:
             cfg.vsync_front_porch = 10;
             cfg.vsync_pulse_width = 8;
             cfg.vsync_back_porch = 20;
-            cfg.pclk_active_neg = 1;
             cfg.de_idle_high = 1;
             cfg.pclk_idle_high = 0;
             
@@ -73,10 +72,6 @@ public:
             cfg.panel_height = DISPLAY_HEIGHT;
             cfg.offset_x = 0;
             cfg.offset_y = 0;
-            cfg.readable = true;
-            cfg.invert = false;
-            cfg.rgb_order = false;
-            
             // 3-wire SPI pins for ST7701 initialization
             auto cfg_detail = _panel_instance.config_detail();
             cfg_detail.pin_cs = PIN_DISP_CS;
@@ -91,10 +86,6 @@ public:
         {
             auto cfg = _light_instance.config();
             cfg.pin_bl = PIN_DISP_BL;
-            cfg.invert = false;
-            cfg.freq = 44100;
-            cfg.pwm_channel = 7;
-            
             _light_instance.config(cfg);
             _panel_instance.light(&_light_instance);
         }
