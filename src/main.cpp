@@ -244,6 +244,12 @@ void setupDisplay() {
     Serial.println("Display begin() succeeded");
     Serial.printf("Display size: %dx%d\n", display.width(), display.height());
     Serial.printf("Display rotation: %d\n", display.getRotation());
+
+    // The known-good reference sketch explicitly drives GPIO38 high.  Keep
+    // that path here so a successful RGB frame is not hidden by the backlight.
+    pinMode(PIN_DISP_BL, OUTPUT);
+    digitalWrite(PIN_DISP_BL, HIGH);
+    Serial.printf("Backlight GPIO%d forced HIGH\n", PIN_DISP_BL);
     
     // Keep the exact post-begin path from the known-good reference firmware.
     // Rotation 0 and the default PWM brightness are already configured by the panel.
@@ -258,6 +264,7 @@ void setupDisplay() {
     Serial.println("Direct LCD drawing enabled (no extra Sprite)");
     Serial.println("=== Display Setup Complete ===");
     drawUI();
+    Serial.println("UI first frame drawn");
 }
 
 void setupWiFi() {
