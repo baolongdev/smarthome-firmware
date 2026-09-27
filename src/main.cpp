@@ -268,8 +268,8 @@ void setupDisplay() {
     Serial.printf("Display size: %dx%d\n", display.width(), display.height());
     Serial.printf("Display rotation: %d\n", display.getRotation());
     
-    display.setRotation(DISPLAY_ROTATION);
-    display.setBrightness(DISPLAY_BRIGHTNESS);
+    // Keep the exact post-begin path from the known-good reference firmware.
+    // Rotation 0 and the default PWM brightness are already configured by the panel.
     display.fillScreen(TFT_RED);  // Red screen = init working
     delay(500);
     display.fillScreen(TFT_GREEN); // Green screen = LCD test; keep visible
