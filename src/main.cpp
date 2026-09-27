@@ -183,6 +183,24 @@ void setup() {
 }
 
 void loop() {
+#if DISPLAY_COLOR_TEST
+    // Keep the diagnostic visible long enough to identify RGB/timing problems.
+    static uint32_t lastColorChange = 0;
+    static uint8_t colorIndex = 0;
+    static const uint16_t colors[] = {TFT_RED, TFT_GREEN, TFT_BLUE, TFT_WHITE};
+    static const char* names[] = {"RED", "GREEN", "BLUE", "WHITE"};
+    if (millis() - lastColorChange > 2500) {
+        display.fillScreen(colors[colorIndex]);
+        display.setTextColor(colorIndex == 3 ? TFT_BLACK : TFT_WHITE, colors[colorIndex]);
+        display.setTextSize(4);
+        display.drawCenterString(names[colorIndex], DISPLAY_WIDTH / 2, DISPLAY_HEIGHT / 2 - 20);
+        colorIndex = (colorIndex + 1) % 4;
+        lastColorChange = millis();
+    }
+    delay(10);
+    return;
+#endif
+
 #if BUTTONS_ENABLED
     // Handle button events
     btn1.tick();
