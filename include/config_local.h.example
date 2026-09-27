@@ -1,0 +1,20 @@
+#pragma once
+
+// ===== User Configuration =====
+// Copy this file to config_local.h and modify with your credentials
+// config_local.h is gitignored
+
+#ifndef CONFIG_LOCAL_H
+#define CONFIG_LOCAL_H
+
+// WiFi
+#define WIFI_SSID "YOUR_WIFI_SSID"
+#define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
+
+// MQTT
+#define MQTT_BROKER "192.168.1.100"
+#define MQTT_PORT 1883
+#define MQTT_USER "your_username"
+#define MQTT_PASSWORD "your_password"
+
+#endif // CONFIG_LOCAL_H

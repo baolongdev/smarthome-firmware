@@ -1,0 +1,29 @@
+# PlatformIO
+.pio/
+.pioenvs/
+.vscode/
+*.bin
+*.elf
+*.map
+
+# Build artifacts
+build/
+*.o
+*.a
+
+# Cloned upstream/reference projects used for hardware validation
+reference/
+
+# IDE
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+include/config_local.h
+*.pem
+*.key
