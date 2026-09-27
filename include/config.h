@@ -37,6 +37,8 @@
 #define DISPLAY_COLOR_TEST 0
 // Bring up only the known-good LCD driver and static UI while isolating startup.
 #define MINIMAL_LCD_UI 1
+// Diagnostic mode: green LCD plus GT911 touch coordinate logging.
+#define TOUCH_TEST_MODE 1
 
 // ===== GPIO Pin Definitions =====
 // RGB Interface (parallel 16-bit)

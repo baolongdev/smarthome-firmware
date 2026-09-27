@@ -84,6 +84,16 @@ void setup() {
     sysInfo.minFreeHeap = sysInfo.freeHeap;
     
     setupDisplay();
+#if TOUCH_TEST_MODE
+    display.fillScreen(TFT_GREEN);
+    display.setTextColor(TFT_BLACK, TFT_GREEN);
+    display.setTextSize(3);
+    display.drawCenterString("TOUCH TEST", DISPLAY_WIDTH / 2, 210);
+    display.drawCenterString("Tap LCD", DISPLAY_WIDTH / 2, 255);
+    Serial.println("Touch test mode: LCD GREEN, touch coordinates enabled");
+    Serial.flush();
+    return;
+#endif
 #if MINIMAL_LCD_UI
     Serial.println("Minimal LCD UI mode: skipping relay/touch/network startup");
     return;
@@ -103,6 +113,25 @@ void setup() {
 }
 
 void loop() {
+#if TOUCH_TEST_MODE
+    static bool wasDown = false;
+    static uint32_t lastTouchLog = 0;
+    uint16_t x = 0;
+    uint16_t y = 0;
+    bool down = display.getTouch(&x, &y);
+    if (down && (!wasDown || millis() - lastTouchLog > 250)) {
+        Serial.printf("Touch DOWN: X=%u Y=%u\n", x, y);
+        Serial.flush();
+        lastTouchLog = millis();
+    } else if (!down && wasDown) {
+        Serial.println("Touch UP");
+        Serial.flush();
+    }
+    wasDown = down;
+    delay(20);
+    return;
+#endif
+
 #if MINIMAL_LCD_UI
     static uint32_t lastMinimalDraw = 0;
     if (millis() - lastMinimalDraw > 1000) {
