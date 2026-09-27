@@ -411,67 +411,77 @@ void updateDisplay() {
 }
 
 void drawUI() {
-    constexpr int MARGIN = 24;
-    constexpr int GAP = 16;
-    constexpr int HEADER_H = 48;
-    constexpr int CARD_Y = 76;
-    constexpr int CARD_W = (DISPLAY_WIDTH - (MARGIN * 2) - GAP) / 2;
-    constexpr int CARD_H = 154;
+    constexpr int MARGIN = 12;
+    constexpr int GAP = 6;
+    constexpr int CARD_Y = 52;
+    constexpr int CARD_W = (DISPLAY_WIDTH - (MARGIN * 2) - GAP * 2) / 3;
+    constexpr int CARD_H = 115;
     const uint16_t BG = TFT_BLACK;
-    const uint16_t CARD_OFF = TFT_DARKGREY;
+    const uint16_t CARD_OFF = 0x2104;
     const uint16_t CARD_ON = TFT_GREEN;
     const uint16_t TEXT = TFT_WHITE;
     const uint16_t MUTED = 0x8410;
 
     canvas.fillScreen(BG);
 
-    // Header: title plus compact WiFi/MQTT indicators.
+    // Compact EspControl-inspired clock/status header.
     canvas.setTextSize(2);
     canvas.setTextColor(TEXT);
-    canvas.drawString("Smart Home", MARGIN, 16);
+    canvas.drawString("Smart Home", MARGIN, 10);
     canvas.setTextSize(1);
     canvas.setTextColor(MUTED);
-    canvas.drawString(DEVICE_NAME, MARGIN, 42);
-    canvas.fillCircle(356, 25, 5, WiFi.status() == WL_CONNECTED ? CARD_ON : TFT_RED);
-    canvas.drawString("WiFi", 366, 20);
-    canvas.fillCircle(420, 25, 5, mqttClient.connected() ? CARD_ON : TFT_RED);
-    canvas.drawString("MQTT", 430, 20);
+    canvas.drawString(WiFi.status() == WL_CONNECTED ? "ONLINE" : "OFFLINE", MARGIN, 34);
+    canvas.fillCircle(112, 38, 4, WiFi.status() == WL_CONNECTED ? CARD_ON : TFT_RED);
+    canvas.drawString("WiFi", 120, 34);
+    canvas.fillCircle(170, 38, 4, mqttClient.connected() ? CARD_ON : TFT_RED);
+    canvas.drawString("MQTT", 178, 34);
+    canvas.setTextColor(MUTED);
+    canvas.drawRightString("12:00", DISPLAY_WIDTH - MARGIN, 16);
+
+    auto drawTile = [&](int x, int y, const char* title, const char* value, uint16_t fill, uint16_t titleColor) {
+        canvas.fillRoundRect(x, y, CARD_W, CARD_H, 14, fill);
+        if (fill == CARD_OFF || fill == 0x2104) canvas.drawRoundRect(x, y, CARD_W, CARD_H, 14, 0x4208);
+        canvas.setTextColor(titleColor);
+        canvas.setTextSize(1);
+        canvas.drawString(title, x + 10, y + 10);
+        canvas.setTextSize(2);
+        canvas.drawCenterString(value, x + CARD_W / 2, y + 50);
+    };
 
     auto drawRelayCard = [&](int index, int x, int y, const char* label, const char* icon) {
         bool on = relayState.state[index];
         uint16_t fill = on ? CARD_ON : CARD_OFF;
-        canvas.fillRoundRect(x, y, CARD_W, CARD_H, 24, fill);
-        if (!on) canvas.drawRoundRect(x, y, CARD_W, CARD_H, 24, 0x4208);
+        canvas.fillRoundRect(x, y, CARD_W, CARD_H, 14, fill);
+        if (!on) canvas.drawRoundRect(x, y, CARD_W, CARD_H, 14, 0x4208);
         canvas.setTextColor(on ? TFT_BLACK : TEXT);
-        canvas.setTextSize(3);
-        canvas.drawCenterString(icon, x + CARD_W / 2, y + 27);
         canvas.setTextSize(2);
-        canvas.drawCenterString(label, x + CARD_W / 2, y + 82);
+        canvas.drawCenterString(icon, x + CARD_W / 2, y + 28);
         canvas.setTextSize(1);
-        canvas.drawCenterString(on ? "ON" : "OFF", x + CARD_W / 2, y + 122);
+        canvas.drawCenterString(label, x + CARD_W / 2, y + 63);
+        canvas.setTextSize(1);
+        canvas.drawCenterString(on ? "ON" : "OFF", x + CARD_W / 2, y + 88);
     };
 
-    drawRelayCard(0, MARGIN, CARD_Y, "Living Room", "L1");
-    drawRelayCard(1, MARGIN + CARD_W + GAP, CARD_Y, "HVAC Unit", "L2");
-    drawRelayCard(2, MARGIN, CARD_Y + CARD_H + GAP, "Wall Plugs", "L3");
+    const int x0 = MARGIN;
+    const int x1 = MARGIN + CARD_W + GAP;
+    const int x2 = MARGIN + (CARD_W + GAP) * 2;
+    const int y0 = CARD_Y;
+    const int y1 = CARD_Y + CARD_H + GAP;
+    const int y2 = CARD_Y + (CARD_H + GAP) * 2;
 
-    // Fourth tile is a status tile because this hardware exposes 3 relays.
-    int sx = MARGIN + CARD_W + GAP;
-    int sy = CARD_Y + CARD_H + GAP;
-    canvas.fillRoundRect(sx, sy, CARD_W, CARD_H, 24, 0x2104);
-    canvas.drawRoundRect(sx, sy, CARD_W, CARD_H, 24, 0x4208);
-    canvas.setTextColor(TEXT);
-    canvas.setTextSize(2);
-    canvas.drawCenterString("System", sx + CARD_W / 2, sy + 24);
-    canvas.setTextSize(1);
-    canvas.setTextColor(MUTED);
-    canvas.drawCenterString(WiFi.status() == WL_CONNECTED ? "ONLINE" : "OFFLINE", sx + CARD_W / 2, sy + 68);
-    canvas.drawCenterString(String(ESP.getFreeHeap() / 1024) + " KB free", sx + CARD_W / 2, sy + 91);
-    canvas.drawCenterString(String(FIRMWARE_VERSION), sx + CARD_W / 2, sy + 114);
+    drawRelayCard(0, x0, y0, "Living Room", "L1");
+    drawRelayCard(1, x1, y0, "HVAC Unit", "L2");
+    drawRelayCard(2, x2, y0, "Wall Plugs", "L3");
+    drawTile(x0, y1, "SYSTEM", WiFi.status() == WL_CONNECTED ? "ONLINE" : "OFFLINE", 0x2104, TEXT);
+    drawTile(x1, y1, "NETWORK", WiFi.localIP().toString().c_str(), 0x2104, TEXT);
+    drawTile(x2, y1, "TOUCH", "GT911", 0x2104, TEXT);
+    drawTile(x0, y2, "ACTIVE", String((relayState.state[0] ? 1 : 0) + (relayState.state[1] ? 1 : 0) + (relayState.state[2] ? 1 : 0)).c_str(), 0x2104, TEXT);
+    drawTile(x1, y2, "HEAP", (String(ESP.getFreeHeap() / 1024) + " KB").c_str(), 0x2104, TEXT);
+    drawTile(x2, y2, "FIRMWARE", FIRMWARE_VERSION, 0x2104, TEXT);
 
     canvas.setTextColor(MUTED);
     canvas.setTextSize(1);
-    canvas.drawString("Tap a tile to toggle", MARGIN, DISPLAY_HEIGHT - 18);
+    canvas.drawString("Tap relay cards to control", MARGIN, DISPLAY_HEIGHT - 8);
 }
 
 void checkConnections() {
@@ -591,13 +601,13 @@ void handleTouch() {
     if (!touch.getFirstTouch(x, y)) return;
     touchWasDown = true;
 
-    constexpr int MARGIN = 24;
-    constexpr int GAP = 16;
-    constexpr int CARD_Y = 76;
-    constexpr int CARD_W = (DISPLAY_WIDTH - (MARGIN * 2) - GAP) / 2;
-    constexpr int CARD_H = 154;
-    const int cardX[3] = {MARGIN, MARGIN + CARD_W + GAP, MARGIN};
-    const int cardY[3] = {CARD_Y, CARD_Y, CARD_Y + CARD_H + GAP};
+    constexpr int MARGIN = 12;
+    constexpr int GAP = 6;
+    constexpr int CARD_Y = 52;
+    constexpr int CARD_W = (DISPLAY_WIDTH - (MARGIN * 2) - GAP * 2) / 3;
+    constexpr int CARD_H = 115;
+    const int cardX[3] = {MARGIN, MARGIN + CARD_W + GAP, MARGIN + (CARD_W + GAP) * 2};
+    const int cardY[3] = {CARD_Y, CARD_Y, CARD_Y};
     for (int i = 0; i < RELAY_COUNT; i++) {
         if (x >= cardX[i] && x < cardX[i] + CARD_W && y >= cardY[i] && y < cardY[i] + CARD_H) {
             handleRelayToggle(i);
