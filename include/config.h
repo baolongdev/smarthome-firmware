@@ -4,8 +4,9 @@
 #define CONFIG_H
 
 // ===== WiFi Configuration =====
-#define WIFI_SSID "YOUR_WIFI_SSID"
-#define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
+#define WIFI_SSID "RD-SEAI_2.4G"
+// Open Wi-Fi network: keep the password empty.
+#define WIFI_PASSWORD ""
 #define WIFI_HOSTNAME "esp32-4848s040"
 #define WIFI_RECONNECT_INTERVAL 10000
 
@@ -68,9 +69,9 @@
 #define PIN_TOUCH_RST -1
 
 // ===== Device Configuration =====
-#define DEVICE_NAME "ESP32-4848S040 Panel"
+#define DEVICE_NAME "Smart Home Panel"
 #define DEVICE_TYPE "panel"
-#define FIRMWARE_VERSION "1.0.0"
+#define FIRMWARE_VERSION "1.1.0-ui"
 #define HARDWARE_VERSION "1.0"
 
 // ===== Relay/Output Pins (4-channel) =====
