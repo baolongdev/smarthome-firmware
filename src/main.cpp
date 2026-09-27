@@ -133,11 +133,41 @@ void loop() {
 #endif
 
 #if MINIMAL_LCD_UI
-    static uint32_t lastMinimalDraw = 0;
-    if (millis() - lastMinimalDraw > 1000) {
-        updateDisplay();
-        lastMinimalDraw = millis();
+    // Keep the UI-first diagnostic self contained.  The reference firmware
+    // proves GT911 through LGFX::getTouch(), so use that same path here rather
+    // than the separate GT911Touch helper which is intentionally skipped.
+    static bool wasDown = false;
+    static uint32_t lastTouchLog = 0;
+    static uint16_t lastX = 0;
+    static uint16_t lastY = 0;
+    uint16_t x = 0;
+    uint16_t y = 0;
+    bool down = display.getTouch(&x, &y);
+
+    if (down) {
+        display.fillCircle(x, y, 9, TFT_RED);
+        display.drawCircle(x, y, 12, TFT_WHITE);
+        display.fillRect(24, 405, 432, 42, TFT_BLACK);
+        display.setTextColor(TFT_WHITE, TFT_BLACK);
+        display.setTextSize(2);
+        display.drawString((String("TOUCH X=") + x + "  Y=" + y).c_str(), 32, 417);
+        if (!wasDown || millis() - lastTouchLog >= 50) {
+            Serial.printf("TOUCH DOWN X=%u Y=%u\n", x, y);
+            Serial.flush();
+            lastTouchLog = millis();
+        }
+        lastX = x;
+        lastY = y;
+    } else if (wasDown) {
+        display.fillCircle(lastX, lastY, 13, TFT_BLACK);
+        display.fillRect(24, 405, 432, 42, TFT_BLACK);
+        display.setTextColor(0x8410, TFT_BLACK);
+        display.setTextSize(1);
+        display.drawCenterString("Tap relay cards to control", DISPLAY_WIDTH / 2, 426);
+        Serial.println("TOUCH UP");
+        Serial.flush();
     }
+    wasDown = down;
     delay(10);
     return;
 #endif
