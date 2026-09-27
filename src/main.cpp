@@ -7,93 +7,9 @@
 #include <ArduinoOTA.h>
 #include <Update.h>
 
-// Include ST7701 panel for ESP32-4848S040
-#include <lgfx/v1/platforms/esp32s3/Panel_RGB.hpp>
-#include <lgfx/v1/platforms/esp32s3/Bus_RGB.hpp>
-
 #include "config.h"
 #include "touch_gt911.h"
-
-// ===== Display Setup (LovyanGFX for ESP32-4848S040) =====
-class LGFX : public lgfx::LGFX_Device {
-public:
-    lgfx::Panel_ST7701_guition_esp32_4848S040 _panel_instance;
-    lgfx::Bus_RGB _bus_instance;
-    lgfx::Light_PWM _light_instance;
-
-    LGFX() {
-        // ESP32-S3 RGB/DPI bus configuration for Guition 4848S040.
-        {
-            auto cfg = _bus_instance.config();
-            cfg.panel = &_panel_instance;
-            cfg.pin_d0 = PIN_DISP_D0;
-            cfg.pin_d1 = PIN_DISP_D1;
-            cfg.pin_d2 = PIN_DISP_D2;
-            cfg.pin_d3 = PIN_DISP_D3;
-            cfg.pin_d4 = PIN_DISP_D4;
-            cfg.pin_d5 = PIN_DISP_D5;
-            cfg.pin_d6 = PIN_DISP_D6;
-            cfg.pin_d7 = PIN_DISP_D7;
-            cfg.pin_d8 = PIN_DISP_D8;
-            cfg.pin_d9 = PIN_DISP_D9;
-            cfg.pin_d10 = PIN_DISP_D10;
-            cfg.pin_d11 = PIN_DISP_D11;
-            cfg.pin_d12 = PIN_DISP_D12;
-            cfg.pin_d13 = PIN_DISP_D13;
-            cfg.pin_d14 = PIN_DISP_D14;
-            cfg.pin_d15 = PIN_DISP_D15;
-            
-            cfg.pin_henable = PIN_DISP_DE;
-            cfg.pin_vsync = PIN_DISP_VSYNC;
-            cfg.pin_hsync = PIN_DISP_HSYNC;
-            cfg.pin_pclk = PIN_DISP_PCLK;
-            cfg.freq_write = 14000000;
-            // Timing/polarity from the known-good 4848S040 reference driver.
-            cfg.hsync_polarity = 0;
-            cfg.vsync_polarity = 0;
-            cfg.hsync_front_porch = 10;
-            cfg.hsync_pulse_width = 8;
-            cfg.hsync_back_porch = 50;
-            cfg.vsync_front_porch = 10;
-            cfg.vsync_pulse_width = 8;
-            cfg.vsync_back_porch = 20;
-            cfg.de_idle_high = 1;
-            cfg.pclk_idle_high = 0;
-            
-            _bus_instance.config(cfg);
-        }
-
-        // Panel configuration (ST7701 with 3-wire SPI for init commands)
-        {
-            auto cfg = _panel_instance.config();
-            cfg.memory_width = DISPLAY_WIDTH;
-            cfg.memory_height = DISPLAY_HEIGHT;
-            cfg.panel_width = DISPLAY_WIDTH;
-            cfg.panel_height = DISPLAY_HEIGHT;
-            cfg.offset_x = 0;
-            cfg.offset_y = 0;
-            // 3-wire SPI pins for ST7701 initialization
-            auto cfg_detail = _panel_instance.config_detail();
-            cfg_detail.pin_cs = PIN_DISP_CS;
-            cfg_detail.pin_sclk = PIN_DISP_SCLK;
-            cfg_detail.pin_mosi = PIN_DISP_MOSI;
-            _panel_instance.config_detail(cfg_detail);
-            
-            _panel_instance.config(cfg);
-        }
-
-        // Backlight configuration
-        {
-            auto cfg = _light_instance.config();
-            cfg.pin_bl = PIN_DISP_BL;
-            _light_instance.config(cfg);
-            _panel_instance.light(&_light_instance);
-        }
-
-        _panel_instance.setBus(&_bus_instance);
-        setPanel(&_panel_instance);
-    }
-};
+#include "lgfx_4848s040_reference.h"
 
 LGFX display;
 // Draw directly to the RGB panel.  The panel driver already owns a PSRAM-backed

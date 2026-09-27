@@ -34,7 +34,7 @@
 #define DISPLAY_BRIGHTNESS 200
 #define DISPLAY_BACKLIGHT_PIN 38
 // Temporary LCD diagnostics: cycle solid colors instead of the Smart Home UI.
-#define DISPLAY_COLOR_TEST 1
+#define DISPLAY_COLOR_TEST 0
 
 // ===== GPIO Pin Definitions =====
 // RGB Interface (parallel 16-bit)
