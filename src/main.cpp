@@ -83,8 +83,12 @@ void setup() {
     sysInfo.freeHeap = ESP.getFreeHeap();
     sysInfo.minFreeHeap = sysInfo.freeHeap;
     
-    setupRelays();
     setupDisplay();
+#if MINIMAL_LCD_UI
+    Serial.println("Minimal LCD UI mode: skipping relay/touch/network startup");
+    return;
+#endif
+    setupRelays();
     setupTouch();
     setupButtons();
     setupWiFi();
@@ -99,6 +103,16 @@ void setup() {
 }
 
 void loop() {
+#if MINIMAL_LCD_UI
+    static uint32_t lastMinimalDraw = 0;
+    if (millis() - lastMinimalDraw > 1000) {
+        updateDisplay();
+        lastMinimalDraw = millis();
+    }
+    delay(10);
+    return;
+#endif
+
 #if DISPLAY_COLOR_TEST
     // Keep the diagnostic visible long enough to identify RGB/timing problems.
     static uint32_t lastColorChange = 0;
