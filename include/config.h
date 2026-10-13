@@ -26,6 +26,7 @@
 #define MQTT_TOPIC_CONFIG MQTT_TOPIC_BASE "/config"
 #define MQTT_TOPIC_AVAILABILITY MQTT_TOPIC_BASE "/availability"
 #define MQTT_TOPIC_OTA MQTT_TOPIC_BASE "/ota"
+#define MQTT_TOPIC_SENSOR MQTT_TOPIC_BASE "/sensor"
 
 // ===== Display Configuration (ESP32-4848S040) =====
 #define DISPLAY_WIDTH 480
@@ -33,12 +34,50 @@
 #define DISPLAY_ROTATION 0
 #define DISPLAY_BRIGHTNESS 200
 #define DISPLAY_BACKLIGHT_PIN 38
-// Temporary LCD diagnostics: cycle solid colors instead of the Smart Home UI.
-#define DISPLAY_COLOR_TEST 0
-// Bring up only the known-good LCD driver and static UI while isolating startup.
-#define MINIMAL_LCD_UI 1
-// Diagnostic mode: green LCD plus GT911 touch coordinate logging.
-#define TOUCH_TEST_MODE 0
+
+// ===== HMI (LVGL) =====
+#define HMI_ROOM_NAME "Phòng khách"            // header title (UTF-8)
+#define HMI_DIM_AFTER_MS 30000                 // auto-dim idle time (toggle in Settings)
+#define HMI_DIM_BRIGHTNESS_PCT 15
+#define HMI_TZ_OFFSET_SECONDS (7 * 3600)
+
+// Primary gauge + two metric cards.  Labels/units/scale are data: change them
+// for another sensor without touching the UI code.
+#define HMI_PRIMARY_LABEL "NHIỆT ĐỘ PHÒNG"
+#define HMI_PRIMARY_UNIT "°C"
+#define HMI_PRIMARY_MIN 16.0f
+#define HMI_PRIMARY_MAX 36.0f
+#define HMI_PRIMARY_WARN 30.0f
+#define HMI_METRIC1_LABEL "Độ ẩm"
+#define HMI_METRIC1_UNIT "%"
+#define HMI_METRIC2_LABEL "Công suất"
+#define HMI_METRIC2_UNIT "W"
+
+// No sensor is wired yet: simulate values until real data arrives on
+// MQTT_TOPIC_SENSOR ({"primary":26.4,"metric1":62,"metric2":412}).
+#define HMI_SIMULATE_SENSORS 1
+#define HMI_SENSOR_STALE_MS 60000
+
+// Optional physical buttons (the 4848S040 has none free: GPIO 9-12 drive the LCD).
+// Define all three to enable focus navigation without touch.
+// #define HMI_BTN_PREV_PIN x
+// #define HMI_BTN_NEXT_PIN x
+// #define HMI_BTN_OK_PIN   x
+
+// Tasmota devices on the LAN, controlled over their HTTP API (/cm?cmnd=...).
+// /config.json "tasmota": [{"name","host","channels","labels":[...]}] overrides these.
+#define TASMOTA_1_NAME "Sonoff M5-3C"
+#define TASMOTA_1_HOST "172.28.182.3"
+#define TASMOTA_1_CHANNELS 3
+#define TASMOTA_2_NAME "TX Ultimate 4C"
+#define TASMOTA_2_HOST "172.28.182.4"
+#define TASMOTA_2_CHANNELS 4
+#define TASMOTA_POLL_MS 3000
+
+// UTF-8 relay names (Control screen).
+#define RELAY_NAME_1 "Phòng khách"
+#define RELAY_NAME_2 "Điều hòa"
+#define RELAY_NAME_3 "Ổ cắm"
 
 // ===== GPIO Pin Definitions =====
 // RGB Interface (parallel 16-bit)

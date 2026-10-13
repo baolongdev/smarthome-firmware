@@ -1,189 +1,54 @@
-# ESP32-4848S040 Firmware
+# ESP32-4848S040 Smart Home Panel Firmware
 
-Firmware for ESP32-S3 based 4.8" 480x480 RGB display panel (ESP32-4848S040) running as a smart home control panel with 4-channel relay control.
+Firmware for the GUITION ESP32-4848S040 (ESP32-S3 N16R8, 4" 480×480 RGB LCD,
+GT911 touch, 3 relays, TF card) running as a smart home control panel:
 
-## Hardware Specifications
+- LVGL 9 HMI: Overview gauge, Control (panel relays + Tasmota devices), Settings, Wi-Fi
+- FreeRTOS architecture: `ui`, `app`, `net`, `devices`, `storage`, `console` tasks
+- Wi-Fi scan / join with on-screen keyboard, MQTT, NTP, ArduinoOTA
+- Tasmota devices on the LAN via their HTTP API
+- TF card: `config.json`, event + sensor logs, firmware update, screenshots
 
-| Component | Specification |
-|-----------|---------------|
-| **MCU** | ESP32-S3 (Xtensa LX7 dual-core, 240MHz) |
-| **Flash** | 16MB QSPI |
-| **PSRAM** | 8MB Octal PSRAM |
-| **Display** | 4.8" 480x480 RGB (parallel 16-bit) |
-| **Touch** | GT911 I2C capacitive touch |
-| **Relays** | 4-channel (GPIO 1, 2, 42, 41) |
-| **Buttons** | 4x tactile buttons (GPIO 0, 9, 10, 11) |
-| **Backlight** | PWM controlled (GPIO 45) |
+**Full documentation (Vietnamese): [docs/README.md](docs/README.md)**
 
-## Pin Mapping
+| Doc | Topic |
+|---|---|
+| [01-phan-cung](docs/01-phan-cung.md) | hardware, verified GPIO map, TF card, Wi-Fi antenna notes |
+| [02-build-nap](docs/02-build-nap.md) | required `platformio.ini`, the 8/16 MB flash header bug, serial, OTA |
+| [03-kien-truc-rtos](docs/03-kien-truc-rtos.md) | tasks, queues, locking, watchdog, source map |
+| [04-giao-dien-hmi](docs/04-giao-dien-hmi.md) | screens, states, palettes, fonts/icons, HMI API |
+| [05-ket-noi](docs/05-ket-noi.md) | Wi-Fi manager, MQTT topics/payloads, Tasmota, NTP |
+| [06-the-nho](docs/06-the-nho.md) | card layout, `config.json` schema, logs, SD firmware update |
+| [07-go-loi](docs/07-go-loi.md) | serial commands, screenshots, reset reasons, troubleshooting |
+| [08-nhat-ky](docs/08-nhat-ky.md) | change log: problems found and how they were fixed |
 
-### RGB Display (Parallel 16-bit)
-| Signal | GPIO |
-|--------|------|
-| D0-D15 | 39-24 |
-| WR (PCLK) | 40 |
-| RD | 41 |
-| DC | 44 |
-| RST | 46 |
-| BL (PWM) | 45 |
+## Quick start
 
-### Touch (I2C - GT911)
-| Signal | GPIO |
-|--------|------|
-| SDA | 47 |
-| SCL | 21 |
-
-### Relays (Active HIGH)
-| Channel | GPIO |
-|---------|------|
-| Relay 1 | 1 |
-| Relay 2 | 2 |
-| Relay 3 | 42 |
-| Relay 4 | 41 |
-
-### Buttons (Active LOW with pullup)
-| Button | GPIO |
-|--------|------|
-| Button 1 | 0 |
-| Button 2 | 9 |
-| Button 3 | 10 |
-| Button 4 | 11 |
-
-## Software Stack
-
-- **Framework**: Arduino (PlatformIO)
-- **Display**: LovyanGFX (RGB panel driver)
-- **MQTT**: PubSubClient
-- **JSON**: ArduinoJson v7
-- **Web Server**: ESPAsyncWebServer (for OTA)
-- **Buttons**: OneButton library
-
-## Building & Flashing
-
-### Prerequisites
-- PlatformIO CLI or VS Code with PlatformIO extension
-- ESP32-S3 board support installed
-
-### Commands
 ```bash
-# Build
-pio run
-
-# Flash via USB
-pio run -t upload
-
-# Flash via OTA (configure upload_port in platformio.ini)
-pio run -t upload -e esp32-4848s040-ota
-
-# Monitor serial
-pio device monitor
-
-# Clean build
-pio run -t clean
+pio run -t upload --upload-port COM18      # use your CH340 port
+pio device monitor -p COM18 -b 115200
+python tools/screenshot.py COM18 shot.png  # current screen as PNG (close the monitor first)
 ```
 
-### First Flash
-1. Connect ESP32-4848S040 via USB-C
-2. Put in boot mode (hold BOOT, press RST, release BOOT)
-3. Run `pio run -t upload`
+`board_upload.flash_size = 16MB` in `platformio.ini` is required: without it the
+image header says 8 MB and the (silent) bootloader refuses to start the app.
 
 ## Configuration
 
-Edit `include/config.h` with your settings:
-- WiFi credentials
-- MQTT broker address
-- Device names
+- Compile-time defaults: `include/config.h` (Wi-Fi, MQTT, gauge metric, Tasmota devices, relay names).
+- Runtime overrides: `/config.json` on the TF card (see docs/06-the-nho.md).
+- Wi-Fi joined from the panel, brightness, auto-dim and colour palette are kept in NVS.
 
-## MQTT Integration
+## MQTT (base `smarthome/device/esp32-4848s040`)
 
-### Topics
-| Topic | Direction | Description |
-|-------|-----------|-------------|
-| `smarthome/device/esp32-4848s040/state` | Pub | Device state (JSON) |
-| `smarthome/device/esp32-4848s040/command` | Sub | Commands (JSON) |
-| `smarthome/device/esp32-4848s040/availability` | Pub | online/offline |
-| `smarthome/device/esp32-4848s040/config` | Sub | Configuration updates |
-| `smarthome/device/esp32-4848s040/ota` | Sub | OTA trigger |
+| Topic | Dir | Payload |
+|---|---|---|
+| `/state` | out, retained | device info + `relays[]` |
+| `/availability` | out, retained (LWT) | `online` / `offline` |
+| `/command` | in | `{"relay":0,"state":true}`, `{"relays":[true,false,true]}`, `{"brightness":0-255}` |
+| `/sensor` | in | `{"primary":26.4,"metric1":62,"metric2":412}` or `{"error":true}` |
 
-### Command Format
-```json
-// Toggle single relay
-{"relay": 0, "state": true}
-
-// Set multiple relays
-{"relays": [true, false, true, false]}
-
-// Set display brightness (0-255)
-{"brightness": 200}
-```
-
-### State Format
-```json
-{
-  "device": "ESP32-4848S040 Panel",
-  "type": "panel",
-  "fw_version": "1.0.0",
-  "uptime": 3600,
-  "free_heap": 123456,
-  "wifi_rssi": -45,
-  "ip": "192.168.1.100",
-  "relays": [
-    {"index": 0, "state": true, "last_change": 120},
-    {"index": 1, "state": false, "last_change": 3600}
-  ]
-}
-```
-
-## Home Assistant Integration
-
-Add to `configuration.yaml`:
-```yaml
-mqtt:
-  switch:
-    - name: "Panel Relay 1"
-      unique_id: "esp32_4848s040_relay_1"
-      state_topic: "smarthome/device/esp32-4848s040/state"
-      command_topic: "smarthome/device/esp32-4848s040/command"
-      value_template: "{{ value_json.relays[0].state }}"
-      payload_on: '{"relay": 0, "state": true}'
-      payload_off: '{"relay": 0, "state": false}'
-      availability_topic: "smarthome/device/esp32-4848s040/availability"
-      # Repeat for relays 2-4 with index 1,2,3
-```
-
-## OTA Updates
-
-### Via PlatformIO
-```bash
-pio run -t upload -e esp32-4848s040-ota
-```
-
-### Via Web Interface
-1. Access `http://<device-ip>/update`
-2. Upload firmware.bin
-
-### Via MQTT
-Publish to `smarthome/device/esp32-4848s040/ota`:
-```json
-{"url": "http://192.168.1.100/firmware.bin"}
-```
-
-## Troubleshooting
-
-### Display not working
-- Check RGB wiring (16 data lines + control)
-- Verify PSRAM is enabled in platformio.ini
-- Check power supply (display needs ~500mA)
-
-### WiFi/MQTT issues
-- Verify credentials in config.h
-- Check serial monitor for connection logs
-- Ensure MQTT broker allows anonymous or correct credentials
-
-### Touch not working
-- GT911 uses I2C address 0x5D or 0x14
-- Check I2C wiring (SDA=47, SCL=21)
-- Add pull-up resistors if needed (4.7kΩ)
+`/config` is subscribed but not handled yet; MQTT OTA and a web `/update` page are not implemented.
 
 ## License
 

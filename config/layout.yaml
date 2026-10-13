@@ -1,0 +1,37 @@
+# HMI 480x480 layout (LVGL 9) - mirrors src/hmi/hmi_ui.cpp and the
+# "Pixel specs" board of the design canvas "ESP32 480 HMI".
+# Design reference only (not parsed by firmware); keep in sync with the code.
+version: 3
+
+screen: { width: 480, height: 480, margin: 16, grid: 8, background: "#0E1015" }
+
+theme:
+  surface: "#1B1F27"
+  elevated: "#252A34"
+  text: "#F5F7FA"
+  muted: "#9299AA"
+  accent: "#30D5C8"
+  accent2: "#FF557C"
+  warning: "#FFB84D"
+  success: "#48D597"
+
+persistent:
+  header: { rect: [16, 16, 448, 40], left: "HMI_ROOM_NAME (16 sb) + link caption (13 r)", right: "clock, wifi icon, AC" }
+  nav: { rect: [16, 408, 448, 56], radius: 16, pad: 4, items: ["Tổng quan", "Điều khiển", "Cài đặt"], item: [144, 48, r12] }
+
+pages:  # content area y 64..392
+  home:
+    gauge: { rect: [124, 64, 232, 232], arc: "270°, start 135°, r104, width 12", notch: "at HMI_PRIMARY_WARN" }
+    label: { font: 12_sb, y: 118 }
+    value: { font: 64_sb, unit: 20_m, y: 144 }
+    sub: { font: 13_r, y: 218 }
+    pill: { y: 260, h: 28, radius: 14 }
+    min_max: { rects: [[150, 266, 32], [298, 266, 32]] }
+    metric_cards: { rects: [[16, 304, 220, 88], [244, 304, 220, 88]], radius: 16, pad: 16, chip: 40 }
+  control:
+    relay_rows: { rects: [[16, 72, 448, 72], [16, 152, 448, 72], [16, 232, 448, 72]], switch: [52, 32] }
+    brightness: { rect: [16, 312, 448, 72], slider: "400 x 8, knob 28, range 10..100" }
+  settings:
+    scroll: vertical
+    sections: ["MÀN HÌNH: Tự giảm sáng", "TRẠNG THÁI HỆ THỐNG: Wi-Fi, MQTT, IP, bộ nhớ, thời gian chạy, firmware"]
+    row: { h: 52, pad: 16, divider: elevated }

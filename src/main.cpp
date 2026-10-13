@@ -1,676 +1,503 @@
+// Business logic as FreeRTOS tasks.  The LVGL HMI (src/hmi/) runs in its own
+// "ui" task and is driven only through include/hmi.h.
+//
+//   task      core prio  owns
+//   ui          1   3    LVGL, touch, backlight              (src/hmi/hmi_ui.cpp)
+//   app         1   4    relays, sensors, settings (NVS)     queue: AppMsg
+//   net         0   2    Wi-Fi manager, MQTT, OTA, NTP       queue: NetMsg
+//   devices     0   2    Tasmota relays over HTTP            (src/tasmota.cpp)
+//   storage     0   1    SD card: logs, stats, fw update     (src/storage.cpp)
+//   console     0   1    serial commands
+//
+// Tasks never call each other's code directly: they post messages.  Shared
+// state is either in the HMI model (locked) or std::atomic.
+
 #include <Arduino.h>
-#include <WiFi.h>
-#include <PubSubClient.h>
 #include <ArduinoJson.h>
-#include <LovyanGFX.hpp>
-#include <OneButton.h>
 #include <ArduinoOTA.h>
-#include <Update.h>
+#include <Preferences.h>
+#include <PubSubClient.h>
+#include <WiFi.h>
+#include <esp_task_wdt.h>
+#include <time.h>
+
+#include <atomic>
 
 #include "config.h"
-#include "touch_gt911.h"
+#include "hmi.h"
 #include "lgfx_4848s040_reference.h"
+#include "storage.h"
+#include "tasmota.h"
+#include "wifi_manager.h"
 
+// Touch is read through LGFX (Touch_GT911 on I2C_NUM_1).  Do not also start
+// Wire on GPIO19/45 - two drivers on the same pins corrupt touch reads.
 LGFX display;
-// Draw directly to the RGB panel.  The panel driver already owns a PSRAM-backed
-// framebuffer; allocating a second 480x480 Sprite can fail and leave the LCD black.
-LGFX& canvas = display;
 
-// ===== Global Objects =====
-WiFiClient wifiClient;
-PubSubClient mqttClient(wifiClient);
-#if BUTTONS_ENABLED
-OneButton btn1(BUTTON_PIN_1, true);
-OneButton btn2(BUTTON_PIN_2, true);
-OneButton btn3(BUTTON_PIN_3, true);
-OneButton btn4(BUTTON_PIN_4, true);
-#endif
-GT911Touch touch;
+namespace {
 
-// ===== Device State =====
-struct RelayState {
-    bool state[RELAY_COUNT] = {false, false, false};
-    uint32_t lastChange[RELAY_COUNT] = {0, 0, 0};
-} relayState;
+// ===================== shared state =====================
 
-struct SystemInfo {
-    uint32_t bootTime = 0;
-    uint32_t lastMqttReconnect = 0;
-    uint32_t lastWifiReconnect = 0;
-    uint32_t mqttReconnectCount = 0;
-    uint32_t wifiReconnectCount = 0;
-    uint32_t freeHeap = 0;
-    uint32_t minFreeHeap = UINT32_MAX;
-    float cpuTemp = 0;
-} sysInfo;
+const uint8_t kRelayPins[RELAY_COUNT] = {RELAY_PIN_1, RELAY_PIN_2, RELAY_PIN_3};
+std::atomic<bool> g_relay[RELAY_COUNT];       // written by app, read by net (MQTT state)
+std::atomic<uint32_t> g_relayChange[RELAY_COUNT];
+std::atomic<bool> g_publishPending{false};    // app -> net: publish MQTT state
+std::atomic<uint32_t> g_minFreeHeap{UINT32_MAX};
+uint32_t g_bootTime = 0;
 
-// ===== Forward Declarations =====
-void setupDisplay();
-void setupWiFi();
-void setupMQTT();
-void setupButtons();
-void setupRelays();
-void setupTouch();
-void setupOTA();
-void mqttCallback(char* topic, byte* payload, unsigned int length);
-void publishState();
-void publishAvailability(bool available);
-void handleRelayCommand(int index, bool state);
-void handleRelayToggle(int index);
-void updateDisplay();
-void drawUI();
-void drawMinimalUI();
-void checkConnections();
-void printSystemInfo();
-void handleTouch();
+storage::Config g_sdConfig;  // /config.json, read once in setup()
+char g_mqttHost[64] = MQTT_BROKER;
+uint16_t g_mqttPort = MQTT_PORT;
+char g_mqttUser[32] = MQTT_USER;
+char g_mqttPass[64] = MQTT_PASSWORD;
 
-// ===== Button Callbacks =====
-void onBtn1Click() { handleRelayToggle(0); }
-void onBtn2Click() { handleRelayToggle(1); }
-void onBtn3Click() { handleRelayToggle(2); }
-void onBtn4Click() { handleRelayToggle(3); }
+// ===================== messages =====================
 
-void setup() {
-    Serial.begin(SERIAL_BAUDRATE);
-    delay(100);
-    
-    Serial.println("\n\n=== ESP32-4848S040 Smart Home Panel ===");
-    Serial.printf("Firmware: %s\n", FIRMWARE_VERSION);
-    Serial.printf("Hardware: %s\n", HARDWARE_VERSION);
-    Serial.printf("Device: %s\n", DEVICE_NAME);
-    Serial.flush();
-    
-    sysInfo.bootTime = millis();
-    sysInfo.freeHeap = ESP.getFreeHeap();
-    sysInfo.minFreeHeap = sysInfo.freeHeap;
-    
-    setupDisplay();
-#if TOUCH_TEST_MODE
-    display.fillScreen(TFT_GREEN);
-    display.setTextColor(TFT_BLACK, TFT_GREEN);
-    display.setTextSize(3);
-    display.drawCenterString("TOUCH TEST", DISPLAY_WIDTH / 2, 210);
-    display.drawCenterString("Tap LCD", DISPLAY_WIDTH / 2, 255);
-    Serial.println("Touch test mode: LCD GREEN, touch coordinates enabled");
-    Serial.flush();
-    return;
-#endif
-#if MINIMAL_LCD_UI
-    Serial.println("Minimal LCD UI mode: skipping relay/touch/network startup");
-    return;
-#endif
-    setupRelays();
-    setupTouch();
-    setupButtons();
-    setupWiFi();
-    setupMQTT();
-    setupOTA();
-    
-    publishAvailability(true);
-    publishState();
-    
-    Serial.println("=== Setup Complete ===");
-    printSystemInfo();
+enum class AppCmd : uint8_t { RelayToggle, RelaySet, Sensors, SensorPreview, SaveBrightness, SaveAutoDim, SaveTheme };
+struct AppMsg {
+    AppCmd cmd;
+    uint8_t index;
+    bool flag;
+    float v[3];
+    char text[12];
+};
+
+enum class NetCmd : uint8_t { Scan, Join };
+struct NetMsg {
+    NetCmd cmd;
+    char ssid[33];
+    char pass[65];
+};
+
+QueueHandle_t g_appQ = nullptr;
+QueueHandle_t g_netQ = nullptr;
+
+void postApp(const AppMsg& m) { xQueueSend(g_appQ, &m, 0); }
+void postNet(const NetMsg& m) { xQueueSend(g_netQ, &m, 0); }
+
+// ===================== app task =====================
+
+Preferences g_prefs;
+
+struct SensorValues {
+    float primary = 0, metric1 = 0, metric2 = 0;
+    bool primaryError = false;
+    bool stale = false;
+};
+
+void setRelay(int index, bool on) {
+    if (index < 0 || index >= RELAY_COUNT || g_relay[index] == on) return;
+    g_relay[index] = on;
+    g_relayChange[index] = millis();
+    digitalWrite(kRelayPins[index], on ? HIGH : LOW);
+    hmi::setRelay(index, on);
+    storage::logEvent("Relay %d %s", index + 1, on ? "ON" : "OFF");
+    g_publishPending = true;
 }
 
-void loop() {
-#if TOUCH_TEST_MODE
-    static bool wasDown = false;
-    static uint32_t lastTouchLog = 0;
-    uint16_t x = 0;
-    uint16_t y = 0;
-    bool down = display.getTouch(&x, &y);
-    if (down && (!wasDown || millis() - lastTouchLog > 250)) {
-        Serial.printf("Touch DOWN: X=%u Y=%u\n", x, y);
-        Serial.flush();
-        lastTouchLog = millis();
-    } else if (!down && wasDown) {
-        Serial.println("Touch UP");
-        Serial.flush();
-    }
-    wasDown = down;
-    delay(20);
-    return;
-#endif
-
-#if MINIMAL_LCD_UI
-    // Keep the UI-first diagnostic self contained.  The reference firmware
-    // proves GT911 through LGFX::getTouch(), so use that same path here rather
-    // than the separate GT911Touch helper which is intentionally skipped.
-    static bool wasDown = false;
-    static uint32_t lastTouchLog = 0;
-    static uint16_t lastX = 0;
-    static uint16_t lastY = 0;
-    uint16_t x = 0;
-    uint16_t y = 0;
-    bool down = display.getTouch(&x, &y);
-
-    if (down) {
-        display.fillCircle(x, y, 9, TFT_RED);
-        display.drawCircle(x, y, 12, TFT_WHITE);
-        display.fillRect(24, 405, 432, 42, TFT_BLACK);
-        display.setTextColor(TFT_WHITE, TFT_BLACK);
-        display.setTextSize(2);
-        display.drawString((String("TOUCH X=") + x + "  Y=" + y).c_str(), 32, 417);
-        if (!wasDown || millis() - lastTouchLog >= 50) {
-            Serial.printf("TOUCH DOWN X=%u Y=%u\n", x, y);
-            Serial.flush();
-            lastTouchLog = millis();
-        }
-        lastX = x;
-        lastY = y;
-    } else if (wasDown) {
-        display.fillCircle(lastX, lastY, 13, TFT_BLACK);
-        display.fillRect(24, 405, 432, 42, TFT_BLACK);
-        display.setTextColor(0x8410, TFT_BLACK);
-        display.setTextSize(1);
-        display.drawCenterString("Tap relay cards to control", DISPLAY_WIDTH / 2, 426);
-        Serial.println("TOUCH UP");
-        Serial.flush();
-    }
-    wasDown = down;
-    delay(10);
-    return;
-#endif
-
-#if DISPLAY_COLOR_TEST
-    // Keep the diagnostic visible long enough to identify RGB/timing problems.
-    static uint32_t lastColorChange = 0;
-    static uint8_t colorIndex = 0;
-    static const uint16_t colors[] = {TFT_RED, TFT_GREEN, TFT_BLUE, TFT_WHITE};
-    static const char* names[] = {"RED", "GREEN", "BLUE", "WHITE"};
-    if (millis() - lastColorChange > 2500) {
-        display.fillScreen(colors[colorIndex]);
-        display.setTextColor(colorIndex == 3 ? TFT_BLACK : TFT_WHITE, colors[colorIndex]);
-        display.setTextSize(4);
-        display.drawCenterString(names[colorIndex], DISPLAY_WIDTH / 2, DISPLAY_HEIGHT / 2 - 20);
-        colorIndex = (colorIndex + 1) % 4;
-        lastColorChange = millis();
-    }
-    delay(10);
-    return;
-#endif
-
-#if BUTTONS_ENABLED
-    // Handle button events
-    btn1.tick();
-    btn2.tick();
-    btn3.tick();
-    btn4.tick();
-#endif
-    
-    // Handle touch
-    handleTouch();
-    
-    // Handle OTA
-    ArduinoOTA.handle();
-    
-    // Maintain connections
-    checkConnections();
-    
-    // MQTT loop
-    mqttClient.loop();
-    
-    // Update display frequently for testing (every 500ms)
-    static uint32_t lastDisplayUpdate = 0;
-    if (millis() - lastDisplayUpdate > 500) {
-        updateDisplay();
-        lastDisplayUpdate = millis();
-    }
-    
-    // Debug: print touch status every 5 seconds
-    static uint32_t lastDebugPrint = 0;
-    if (millis() - lastDebugPrint > 5000) {
-        Serial.printf("Loop: heap=%dKB, WiFi=%s, MQTT=%s, TouchPts=%d\n", 
-                      ESP.getFreeHeap() / 1024,
-                      WiFi.status() == WL_CONNECTED ? "OK" : "FAIL",
-                      mqttClient.connected() ? "OK" : "FAIL",
-                      touch.getTouchCount());
-        lastDebugPrint = millis();
-    }
-    
-    // System monitoring
-    static uint32_t lastHeapCheck = 0;
-    if (millis() - lastHeapCheck > HEAP_MONITOR_INTERVAL) {
-        sysInfo.freeHeap = ESP.getFreeHeap();
-        if (sysInfo.freeHeap < sysInfo.minFreeHeap) {
-            sysInfo.minFreeHeap = sysInfo.freeHeap;
-        }
-        lastHeapCheck = millis();
-    }
-    
-    delay(10);
-}
-
-// ===== Setup Functions =====
-void setupDisplay() {
-    Serial.println("=== Display Setup Start ===");
-    Serial.printf("Config: W=%d H=%d ROT=%d BL=%d\n", DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_ROTATION, DISPLAY_BRIGHTNESS);
-    Serial.printf("Pins: PCLK=%d HSYNC=%d VSYNC=%d DE=%d CS=%d SCLK=%d MOSI=%d BL=%d\n",
-                  PIN_DISP_PCLK, PIN_DISP_HSYNC, PIN_DISP_VSYNC, PIN_DISP_DE,
-                  PIN_DISP_CS, PIN_DISP_SCLK, PIN_DISP_MOSI, PIN_DISP_BL);
-    
-    // Reset display hardware
-    Serial.println("Resetting display hardware...");
-    if (PIN_DISP_RST >= 0) {
-        pinMode(PIN_DISP_RST, OUTPUT);
-        digitalWrite(PIN_DISP_RST, LOW);
-        delay(100);
-        digitalWrite(PIN_DISP_RST, HIGH);
-        delay(100);
-    }
-    Serial.println("Reset done");
-    
-    // Initialize display
-    Serial.println("Calling display.begin()...");
-    bool result = display.begin();
-    Serial.printf("display.begin() returned: %s\n", result ? "true" : "false");
-    
-    if (!result) {
-        Serial.println("!!! Display initialization FAILED !!!");
-        Serial.printf("Display width: %d, height: %d\n", display.width(), display.height());
-        return;
-    }
-    
-    Serial.println("Display begin() succeeded");
-    Serial.printf("Display size: %dx%d\n", display.width(), display.height());
-    Serial.printf("Display rotation: %d\n", display.getRotation());
-
-    // The known-good reference sketch explicitly drives GPIO38 high.  Keep
-    // that path here so a successful RGB frame is not hidden by the backlight.
-    pinMode(PIN_DISP_BL, OUTPUT);
-    digitalWrite(PIN_DISP_BL, HIGH);
-    Serial.printf("Backlight GPIO%d forced HIGH\n", PIN_DISP_BL);
-    
-    // Match the known-good reference flow exactly: begin(), backlight, then
-    // draw once.  Do not cycle red/green/blue/black here; that test sequence
-    // can leave this RGB panel showing only a lit black frame.
-    delay(50);
-    Serial.println("Direct LCD drawing enabled (no extra Sprite)");
-    Serial.println("=== Display Setup Complete ===");
-#if MINIMAL_LCD_UI
-    drawMinimalUI();
-#else
-    drawUI();
-#endif
-    Serial.println("UI first frame drawn");
-}
-
-void setupWiFi() {
-    Serial.println("Connecting to WiFi...");
-    WiFi.setHostname(WIFI_HOSTNAME);
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    
-    uint32_t start = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - start < 20000) {
-        delay(500);
-        Serial.print(".");
-    }
-    
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.println();
-        Serial.printf("WiFi connected: %s\n", WiFi.localIP().toString().c_str());
-        Serial.printf("RSSI: %d dBm\n", WiFi.RSSI());
-    } else {
-        Serial.println("\nWiFi connection failed!");
+void pushSensors(const SensorValues& s, hmi::SensorState state) {
+    hmi::setPrimary(s.primary, s.primaryError ? hmi::SensorState::Error : state);
+    hmi::setMetric(0, s.metric1, state);
+    hmi::setMetric(1, s.metric2, state);
+    static uint32_t lastLog = 0;
+    if (state == hmi::SensorState::Ok && !s.primaryError && (!lastLog || millis() - lastLog >= 60000)) {
+        lastLog = millis();
+        storage::logSensors(s.primary, s.metric1, s.metric2);
     }
 }
 
-void setupMQTT() {
-    mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
-    mqttClient.setCallback(mqttCallback);
-    mqttClient.setBufferSize(2048);
-    mqttClient.setKeepAlive(MQTT_KEEPALIVE);
-}
+void appTask(void*) {
+    SensorValues sensors;
+    bool simulate = HMI_SIMULATE_SENSORS;
+    uint32_t lastSim = 0, lastReal = 0;
+    esp_task_wdt_add(nullptr);
 
-void setupButtons() {
-#if BUTTONS_ENABLED
-    btn1.attachClick(onBtn1Click);
-    btn2.attachClick(onBtn2Click);
-    btn3.attachClick(onBtn3Click);
-    btn4.attachClick(onBtn4Click);
-    
-    btn1.setDebounceMs(50);
-    btn2.setDebounceMs(50);
-    btn3.setDebounceMs(50);
-    btn4.setDebounceMs(50);
-#endif
-    Serial.println("Buttons initialized");
-}
-
-void setupRelays() {
-    const uint8_t relayPins[RELAY_COUNT] = {RELAY_PIN_1, RELAY_PIN_2, RELAY_PIN_3};
-    
-    for (int i = 0; i < RELAY_COUNT; i++) {
-        pinMode(relayPins[i], OUTPUT);
-        digitalWrite(relayPins[i], LOW); // Active HIGH relay, OFF = LOW
-        relayState.state[i] = false;
-        relayState.lastChange[i] = millis();
-    }
-    
-    Serial.printf("Relays initialized (%d channels)\n", RELAY_COUNT);
-}
-
-// ===== MQTT Functions =====
-void mqttCallback(char* topic, byte* payload, unsigned int length) {
-    String message;
-    for (unsigned int i = 0; i < length; i++) {
-        message += (char)payload[i];
-    }
-    
-    Serial.printf("MQTT Received [%s]: %s\n", topic, message.c_str());
-    
-    StaticJsonDocument<512> doc;
-    DeserializationError error = deserializeJson(doc, message);
-    if (error) {
-        Serial.printf("JSON parse failed: %s\n", error.c_str());
-        return;
-    }
-    
-    String cmdTopic = String(MQTT_TOPIC_COMMAND);
-    if (String(topic) == cmdTopic) {
-        // Handle relay commands
-        if (doc.containsKey("relay")) {
-            int index = doc["relay"];
-            bool state = doc["state"] | false;
-            handleRelayCommand(index, state);
-        }
-        // Handle all relays
-        else if (doc.containsKey("relays")) {
-            JsonArray relays = doc["relays"];
-            for (int i = 0; i < relays.size() && i < RELAY_COUNT; i++) {
-                handleRelayCommand(i, relays[i]);
+    for (;;) {
+        AppMsg m;
+        if (xQueueReceive(g_appQ, &m, pdMS_TO_TICKS(100)) == pdTRUE) {
+            switch (m.cmd) {
+                case AppCmd::RelayToggle:
+                    if (m.index < RELAY_COUNT) setRelay(m.index, !g_relay[m.index]);
+                    break;
+                case AppCmd::RelaySet: setRelay(m.index, m.flag); break;
+                case AppCmd::Sensors:  // real data (MQTT): simulation off for good
+                    simulate = false;
+                    lastReal = millis();
+                    sensors.stale = false;
+                    sensors.primaryError = m.flag;
+                    if (!isnan(m.v[0])) sensors.primary = m.v[0];
+                    if (!isnan(m.v[1])) sensors.metric1 = m.v[1];
+                    if (!isnan(m.v[2])) sensors.metric2 = m.v[2];
+                    pushSensors(sensors, hmi::SensorState::Ok);
+                    break;
+                case AppCmd::SensorPreview: {  // console "sensor ok|warn|error|loading|stale|sim"
+                    const char* s = m.text;
+                    simulate = strcmp(s, "sim") == 0;
+                    if (strcmp(s, "ok") == 0) hmi::setPrimary(26.4f);
+                    else if (strcmp(s, "warn") == 0) hmi::setPrimary(31.8f);
+                    else if (strcmp(s, "error") == 0) hmi::setPrimary(0, hmi::SensorState::Error);
+                    else if (strcmp(s, "loading") == 0) hmi::setPrimary(0, hmi::SensorState::Loading);
+                    else if (strcmp(s, "stale") == 0) hmi::setPrimary(26.4f, hmi::SensorState::Stale);
+                    break;
+                }
+                case AppCmd::SaveBrightness: g_prefs.putUChar("bright", m.index); break;
+                case AppCmd::SaveAutoDim: g_prefs.putBool("autodim", m.flag); break;
+                case AppCmd::SaveTheme: g_prefs.putUChar("theme", m.index); break;
             }
         }
-        // Handle brightness
-        else if (doc.containsKey("brightness")) {
-            uint8_t brightness = doc["brightness"];
-            ledcWrite(0, brightness);
+
+        const uint32_t now = millis();
+        if (simulate && now - g_bootTime > 1500 && (!lastSim || now - lastSim >= 2000)) {
+            // No sensor wired yet: random walk until real data arrives on MQTT_TOPIC_SENSOR.
+            if (!lastSim) sensors = SensorValues{26.4f, 62, 412};
+            lastSim = now;
+            sensors.primary = constrain(sensors.primary + random(-60, 61) / 100.0f, 23.5f, 28.5f);
+            sensors.metric1 = constrain(sensors.metric1 + random(-2, 3), 55.0f, 70.0f);
+            sensors.metric2 = constrain(sensors.metric2 + random(-30, 31), 320.0f, 520.0f);
+            pushSensors(sensors, hmi::SensorState::Ok);
         }
+        if (!simulate && lastReal && !sensors.stale && now - lastReal > HMI_SENSOR_STALE_MS) {
+            sensors.stale = true;
+            storage::logEvent("Sensor data stale");
+            pushSensors(sensors, hmi::SensorState::Stale);
+        }
+        esp_task_wdt_reset();
+    }
+}
+
+// ===================== net task =====================
+
+WiFiClient g_wifiClient;
+PubSubClient g_mqtt(g_wifiClient);
+
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+    Serial.printf("MQTT [%s]: %.*s\n", topic, length, (const char*)payload);
+    JsonDocument doc;
+    if (deserializeJson(doc, payload, length)) return;
+
+    AppMsg m{};
+    if (strcmp(topic, MQTT_TOPIC_SENSOR) == 0) {
+        // {"primary":26.4,"metric1":62,"metric2":412}  or  {"error":true}
+        m.cmd = AppCmd::Sensors;
+        m.flag = doc["error"] | false;
+        m.v[0] = doc["primary"].is<float>() ? doc["primary"].as<float>() : NAN;
+        m.v[1] = doc["metric1"].is<float>() ? doc["metric1"].as<float>() : NAN;
+        m.v[2] = doc["metric2"].is<float>() ? doc["metric2"].as<float>() : NAN;
+        postApp(m);
+        return;
+    }
+    if (strcmp(topic, MQTT_TOPIC_COMMAND) != 0) return;
+    if (doc["relay"].is<int>()) {
+        m.cmd = AppCmd::RelaySet;
+        m.index = doc["relay"].as<int>();
+        m.flag = doc["state"] | false;
+        postApp(m);
+    } else if (doc["relays"].is<JsonArray>()) {
+        JsonArray relays = doc["relays"];
+        for (size_t i = 0; i < relays.size() && i < RELAY_COUNT; i++) {
+            postApp(AppMsg{AppCmd::RelaySet, static_cast<uint8_t>(i), relays[i].as<bool>(), {}, {}});
+        }
+    } else if (doc["brightness"].is<int>()) {
+        // 0-255 for backwards compatibility; the HMI works in percent.
+        hmi::setBrightness(map(doc["brightness"].as<int>(), 0, 255, 0, 100));
     }
 }
 
 void publishState() {
-    StaticJsonDocument<512> doc;
+    if (!g_mqtt.connected()) return;
+    JsonDocument doc;
     doc["device"] = DEVICE_NAME;
     doc["type"] = DEVICE_TYPE;
     doc["fw_version"] = FIRMWARE_VERSION;
     doc["hw_version"] = HARDWARE_VERSION;
-    doc["uptime"] = (millis() - sysInfo.bootTime) / 1000;
-    doc["free_heap"] = sysInfo.freeHeap;
-    doc["min_free_heap"] = sysInfo.minFreeHeap;
+    doc["uptime"] = (millis() - g_bootTime) / 1000;
+    doc["free_heap"] = ESP.getFreeHeap();
+    doc["min_free_heap"] = g_minFreeHeap.load();
     doc["wifi_rssi"] = WiFi.RSSI();
     doc["ip"] = WiFi.localIP().toString();
-    
-    JsonArray relays = doc.createNestedArray("relays");
+    JsonArray relays = doc["relays"].to<JsonArray>();
     for (int i = 0; i < RELAY_COUNT; i++) {
-        JsonObject r = relays.createNestedObject();
+        JsonObject r = relays.add<JsonObject>();
         r["index"] = i;
-        r["state"] = relayState.state[i];
-        r["last_change"] = (millis() - relayState.lastChange[i]) / 1000;
+        r["state"] = g_relay[i].load();
+        r["last_change"] = (millis() - g_relayChange[i]) / 1000;
     }
-    
-    String output;
-    serializeJson(doc, output);
-    mqttClient.publish(MQTT_TOPIC_STATE, output.c_str(), true);
-}
-
-void publishAvailability(bool available) {
-    mqttClient.publish(MQTT_TOPIC_AVAILABILITY, available ? "online" : "offline", true);
-}
-
-// ===== Relay Control =====
-void handleRelayCommand(int index, bool state) {
-    if (index < 0 || index >= RELAY_COUNT) return;
-    
-    const uint8_t relayPins[RELAY_COUNT] = {RELAY_PIN_1, RELAY_PIN_2, RELAY_PIN_3};
-    
-    if (relayState.state[index] != state) {
-        relayState.state[index] = state;
-        relayState.lastChange[index] = millis();
-        digitalWrite(relayPins[index], state ? HIGH : LOW);
-        
-        Serial.printf("Relay %d: %s\n", index + 1, state ? "ON" : "OFF");
-        publishState();
-    }
-}
-
-void handleRelayToggle(int index) {
-    if (index < 0 || index >= RELAY_COUNT) return;
-    handleRelayCommand(index, !relayState.state[index]);
-}
-
-// ===== Display Functions =====
-void updateDisplay() {
-    drawUI();
-}
-
-// Keep the first hardware bring-up deliberately boring: no String temporaries,
-// network state, lambdas, or dynamic layout.  This is the visual checkpoint
-// before enabling the full EspControl-inspired screen.
-void drawMinimalUI() {
-    // Start from the exact known-good reference color.  Use only text and
-    // plain rectangles here; some RGB-panel builds reset during rounded
-    // rectangle rendering, which leaves only a lit black screen.
-    display.fillScreen(TFT_GREEN);
-    display.setTextColor(TFT_BLACK, TFT_GREEN);
-    display.setTextSize(3);
-    display.drawString("SMART HOME", 24, 18);
-    display.setTextSize(2);
-    display.drawString("LCD UI ONLINE", 24, 62);
-    display.drawString("L1  LIVING   OFF", 24, 120);
-    display.drawString("L2  HVAC     OFF", 24, 160);
-    display.drawString("L3  PLUGS    OFF", 24, 200);
-    display.drawString("TOUCH READY", 24, 270);
-    display.setTextSize(1);
-    display.drawString("GT911 / UI FIRST MODE", 24, 315);
-}
-
-void drawUI() {
-    constexpr int MARGIN = 12;
-    constexpr int GAP = 6;
-    constexpr int CARD_Y = 52;
-    constexpr int CARD_W = (DISPLAY_WIDTH - (MARGIN * 2) - GAP * 2) / 3;
-    constexpr int CARD_H = 115;
-    const uint16_t BG = TFT_BLACK;
-    const uint16_t CARD_OFF = 0x2104;
-    const uint16_t CARD_ON = TFT_GREEN;
-    const uint16_t TEXT = TFT_WHITE;
-    const uint16_t MUTED = 0x8410;
-
-    canvas.fillScreen(BG);
-
-    // Compact EspControl-inspired clock/status header.
-    canvas.setTextSize(2);
-    canvas.setTextColor(TEXT);
-    canvas.drawString("Smart Home", MARGIN, 10);
-    canvas.setTextSize(1);
-    canvas.setTextColor(MUTED);
-    canvas.drawString(WiFi.status() == WL_CONNECTED ? "ONLINE" : "OFFLINE", MARGIN, 34);
-    canvas.fillCircle(112, 38, 4, WiFi.status() == WL_CONNECTED ? CARD_ON : TFT_RED);
-    canvas.drawString("WiFi", 120, 34);
-    canvas.fillCircle(170, 38, 4, mqttClient.connected() ? CARD_ON : TFT_RED);
-    canvas.drawString("MQTT", 178, 34);
-    canvas.setTextColor(MUTED);
-    canvas.drawRightString("12:00", DISPLAY_WIDTH - MARGIN, 16);
-
-    auto drawTile = [&](int x, int y, const char* title, const char* value, uint16_t fill, uint16_t titleColor) {
-        canvas.fillRoundRect(x, y, CARD_W, CARD_H, 14, fill);
-        if (fill == CARD_OFF || fill == 0x2104) canvas.drawRoundRect(x, y, CARD_W, CARD_H, 14, 0x4208);
-        canvas.setTextColor(titleColor);
-        canvas.setTextSize(1);
-        canvas.drawString(title, x + 10, y + 10);
-        canvas.setTextSize(2);
-        canvas.drawCenterString(value, x + CARD_W / 2, y + 50);
-    };
-
-    auto drawRelayCard = [&](int index, int x, int y, const char* label, const char* icon) {
-        bool on = relayState.state[index];
-        uint16_t fill = on ? CARD_ON : CARD_OFF;
-        canvas.fillRoundRect(x, y, CARD_W, CARD_H, 14, fill);
-        if (!on) canvas.drawRoundRect(x, y, CARD_W, CARD_H, 14, 0x4208);
-        canvas.setTextColor(on ? TFT_BLACK : TEXT);
-        canvas.setTextSize(2);
-        canvas.drawCenterString(icon, x + CARD_W / 2, y + 28);
-        canvas.setTextSize(1);
-        canvas.drawCenterString(label, x + CARD_W / 2, y + 63);
-        canvas.setTextSize(1);
-        canvas.drawCenterString(on ? "ON" : "OFF", x + CARD_W / 2, y + 88);
-    };
-
-    const int x0 = MARGIN;
-    const int x1 = MARGIN + CARD_W + GAP;
-    const int x2 = MARGIN + (CARD_W + GAP) * 2;
-    const int y0 = CARD_Y;
-    const int y1 = CARD_Y + CARD_H + GAP;
-    const int y2 = CARD_Y + (CARD_H + GAP) * 2;
-
-    drawRelayCard(0, x0, y0, "Living Room", "L1");
-    drawRelayCard(1, x1, y0, "HVAC Unit", "L2");
-    drawRelayCard(2, x2, y0, "Wall Plugs", "L3");
-    drawTile(x0, y1, "SYSTEM", WiFi.status() == WL_CONNECTED ? "ONLINE" : "OFFLINE", 0x2104, TEXT);
-    drawTile(x1, y1, "NETWORK", WiFi.localIP().toString().c_str(), 0x2104, TEXT);
-    drawTile(x2, y1, "TOUCH", "GT911", 0x2104, TEXT);
-    drawTile(x0, y2, "ACTIVE", String((relayState.state[0] ? 1 : 0) + (relayState.state[1] ? 1 : 0) + (relayState.state[2] ? 1 : 0)).c_str(), 0x2104, TEXT);
-    drawTile(x1, y2, "HEAP", (String(ESP.getFreeHeap() / 1024) + " KB").c_str(), 0x2104, TEXT);
-    drawTile(x2, y2, "FIRMWARE", FIRMWARE_VERSION, 0x2104, TEXT);
-
-    canvas.setTextColor(MUTED);
-    canvas.setTextSize(1);
-    canvas.drawString("Tap relay cards to control", MARGIN, DISPLAY_HEIGHT - 8);
-}
-
-void checkConnections() {
-    // WiFi reconnection
-    if (WiFi.status() != WL_CONNECTED) {
-        if (millis() - sysInfo.lastWifiReconnect > WIFI_RECONNECT_INTERVAL) {
-            Serial.println("WiFi disconnected, reconnecting...");
-            WiFi.reconnect();
-            sysInfo.lastWifiReconnect = millis();
-            sysInfo.wifiReconnectCount++;
-        }
-        return;
-    }
-    
-    // MQTT reconnection
-    if (!mqttClient.connected()) {
-        if (millis() - sysInfo.lastMqttReconnect > MQTT_RECONNECT_INTERVAL) {
-            Serial.println("MQTT disconnected, reconnecting...");
-            String clientId = String(MQTT_CLIENT_ID) + "-" + String(random(0xffff), HEX);
-            
-            if (mqttClient.connect(clientId.c_str(), MQTT_USER, MQTT_PASSWORD,
-                                   MQTT_TOPIC_AVAILABILITY, 1, true, "offline")) {
-                Serial.println("MQTT connected");
-                mqttClient.subscribe(MQTT_TOPIC_COMMAND);
-                mqttClient.subscribe(MQTT_TOPIC_CONFIG);
-                publishAvailability(true);
-                publishState();
-            } else {
-                Serial.printf("MQTT connect failed, rc=%d\n", mqttClient.state());
-            }
-            sysInfo.lastMqttReconnect = millis();
-            sysInfo.mqttReconnectCount++;
-        }
-    }
-}
-
-void printSystemInfo() {
-    Serial.printf("Free Heap: %d bytes\n", ESP.getFreeHeap());
-    Serial.printf("Min Free Heap: %d bytes\n", ESP.getMinFreeHeap());
-    Serial.printf("Chip Model: %s Rev %d\n", ESP.getChipModel(), ESP.getChipRevision());
-    Serial.printf("CPU Freq: %d MHz\n", ESP.getCpuFreqMHz());
-    Serial.printf("Flash Size: %d bytes\n", ESP.getFlashChipSize());
-    Serial.printf("PSRAM Size: %d bytes\n", ESP.getPsramSize());
-}
-
-void setupTouch() {
-    Serial.println("=== Touch Setup Start ===");
-    Serial.printf("Touch pins: SDA=%d SCL=%d\n", PIN_TOUCH_SDA, PIN_TOUCH_SCL);
-    
-    Wire.begin(PIN_TOUCH_SDA, PIN_TOUCH_SCL);
-    Serial.println("I2C started");
-    
-    // Scan I2C bus
-    Serial.println("Scanning I2C bus...");
-    for (uint8_t addr = 1; addr < 127; addr++) {
-        Wire.beginTransmission(addr);
-        if (Wire.endTransmission() == 0) {
-            Serial.printf("  Found device at 0x%02X\n", addr);
-        }
-    }
-    
-    if (touch.begin()) {
-        Serial.println("Touch initialized successfully");
-    } else {
-        Serial.println("!!! Touch initialization FAILED !!!");
-    }
-    Serial.println("=== Touch Setup Complete ===");
+    String out;
+    serializeJson(doc, out);
+    g_mqtt.publish(MQTT_TOPIC_STATE, out.c_str(), true);
 }
 
 void setupOTA() {
-    Serial.println("Starting OTA...");
     ArduinoOTA.setHostname(WIFI_HOSTNAME);
     ArduinoOTA.setPassword(OTA_PASSWORD);
     ArduinoOTA.setPort(OTA_PORT);
-    
-    ArduinoOTA.onStart([]() {
-        String type = (ArduinoOTA.getCommand() == U_FLASH) ? "sketch" : "filesystem";
-        Serial.println("OTA Start: " + type);
-    });
-    
-    ArduinoOTA.onEnd([]() {
-        Serial.println("\nOTA End");
-    });
-    
-    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-        Serial.printf("OTA Progress: %u%%\r", (progress / (total / 100)));
-    });
-    
-    ArduinoOTA.onError([](ota_error_t error) {
-        Serial.printf("OTA Error[%u]: ", error);
-        if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
-        else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
-        else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
-        else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
-        else if (error == OTA_END_ERROR) Serial.println("End Failed");
-    });
-    
+    ArduinoOTA.onStart([]() { storage::logEvent("OTA start"); });
+    ArduinoOTA.onError([](ota_error_t e) { storage::logEvent("OTA error %u", e); });
     ArduinoOTA.begin();
-    Serial.println("OTA ready");
 }
 
-void handleTouch() {
-    static uint32_t lastTouchRead = 0;
-    static bool touchWasDown = false;
-    if (millis() - lastTouchRead < 50) return;  // 20Hz max
-    lastTouchRead = millis();
-    
-    bool down = touch.read();
-    if (!down) {
-        touchWasDown = false;
-        return;
+// MQTT with exponential backoff (5..60 s) and a 1 s TCP timeout.
+void maintainMqtt(uint32_t now) {
+    static uint32_t lastTry = 0, retryDelay = MQTT_RECONNECT_INTERVAL;
+    if (!wifimgr::connected() || g_mqtt.connected()) return;
+    if (lastTry && now - lastTry < retryDelay) return;
+    lastTry = now;
+    String id = String(MQTT_CLIENT_ID) + "-" + String(random(0xffff), HEX);
+    if (g_mqtt.connect(id.c_str(), g_mqttUser[0] ? g_mqttUser : nullptr, g_mqttPass[0] ? g_mqttPass : nullptr,
+                       MQTT_TOPIC_AVAILABILITY, 1, true, "offline")) {
+        storage::logEvent("MQTT connected to %s:%u", g_mqttHost, g_mqttPort);
+        g_mqtt.subscribe(MQTT_TOPIC_COMMAND);
+        g_mqtt.subscribe(MQTT_TOPIC_CONFIG);
+        g_mqtt.subscribe(MQTT_TOPIC_SENSOR);
+        g_mqtt.publish(MQTT_TOPIC_AVAILABILITY, "online", true);
+        publishState();
+        retryDelay = MQTT_RECONNECT_INTERVAL;
+    } else {
+        Serial.printf("MQTT connect failed rc=%d, retry in %lus\n", g_mqtt.state(), retryDelay / 1000);
+        retryDelay = min<uint32_t>(retryDelay * 2, 60000);
     }
+}
 
-    // Trigger once on touch-down, not continuously while the finger remains down.
-    if (touchWasDown) return;
-    int16_t x, y;
-    if (!touch.getFirstTouch(x, y)) return;
-    touchWasDown = true;
+// Link, clock and system info for the header / Settings, once a second.
+void feedHmiStatus(uint32_t now) {
+    static uint32_t last = 0;
+    if (last && now - last < 1000) return;
+    last = now;
+    const bool up = wifimgr::connected();
+    hmi::Link link = hmi::Link::Offline;
+    if (up) link = g_mqtt.connected() ? hmi::Link::Online : hmi::Link::BrokerDown;
+    else if (now - g_bootTime < 20000) link = hmi::Link::Connecting;
+    hmi::setLink(link);
 
-    constexpr int MARGIN = 12;
-    constexpr int GAP = 6;
-    constexpr int CARD_Y = 52;
-    constexpr int CARD_W = (DISPLAY_WIDTH - (MARGIN * 2) - GAP * 2) / 3;
-    constexpr int CARD_H = 115;
-    const int cardX[3] = {MARGIN, MARGIN + CARD_W + GAP, MARGIN + (CARD_W + GAP) * 2};
-    const int cardY[3] = {CARD_Y, CARD_Y, CARD_Y};
-    for (int i = 0; i < RELAY_COUNT; i++) {
-        if (x >= cardX[i] && x < cardX[i] + CARD_W && y >= cardY[i] && y < cardY[i] + CARD_H) {
-            handleRelayToggle(i);
-            Serial.printf("Touch: X=%d Y=%d -> Relay %d\n", x, y, i + 1);
-            return;
+    struct tm t;
+    char hhmm[6] = "--:--";
+    if (getLocalTime(&t, 0)) strftime(hhmm, sizeof(hhmm), "%H:%M", &t);
+    hmi::setClock(hhmm);
+
+    hmi::SystemInfo info;
+    if (up) {
+        strlcpy(info.ssid, WiFi.SSID().c_str(), sizeof(info.ssid));
+        strlcpy(info.ip, WiFi.localIP().toString().c_str(), sizeof(info.ip));
+        info.rssi = WiFi.RSSI();
+    }
+    const uint32_t heap = ESP.getFreeHeap();
+    if (heap < g_minFreeHeap) g_minFreeHeap = heap;
+    info.heapKB = heap / 1024;
+    info.psramKB = ESP.getFreePsram() / 1024;
+    info.uptimeS = (now - g_bootTime) / 1000;
+    hmi::setSystemInfo(info);
+}
+
+void netTask(void*) {
+    g_wifiClient.setTimeout(1);  // bound the blocking TCP connect
+    g_mqtt.setServer(g_mqttHost, g_mqttPort);
+    g_mqtt.setCallback(mqttCallback);
+    g_mqtt.setBufferSize(2048);
+    g_mqtt.setKeepAlive(MQTT_KEEPALIVE);
+    g_mqtt.setSocketTimeout(2);
+    wifimgr::begin(g_sdConfig);
+
+    bool wasUp = false, otaStarted = false;
+    for (;;) {
+        NetMsg m;
+        if (xQueueReceive(g_netQ, &m, pdMS_TO_TICKS(20)) == pdTRUE) {
+            if (m.cmd == NetCmd::Scan) wifimgr::startScan();
+            else wifimgr::join(m.ssid, m.pass);
         }
+        const uint32_t now = millis();
+        wifimgr::loop();
+
+        const bool up = wifimgr::connected();
+        if (up != wasUp) {
+            wasUp = up;
+            if (up) {
+                storage::logEvent("Wi-Fi connected: %s %s RSSI %d", WiFi.SSID().c_str(),
+                                  WiFi.localIP().toString().c_str(), WiFi.RSSI());
+                configTime(HMI_TZ_OFFSET_SECONDS, 0, "pool.ntp.org", "time.google.com");
+                if (!otaStarted) {
+                    setupOTA();
+                    otaStarted = true;
+                }
+            } else {
+                storage::logEvent("Wi-Fi disconnected");
+            }
+        }
+        maintainMqtt(now);
+        g_mqtt.loop();
+        if (g_publishPending.exchange(false)) publishState();
+        if (otaStarted) ArduinoOTA.handle();
+        feedHmiStatus(now);
     }
-    Serial.printf("Touch: X=%d Y=%d -> status tile\n", x, y);
 }
+
+// ===================== console task =====================
+
+void printTasks() {
+    static const char* const names[] = {"ui", "app", "net", "devices", "storage", "console"};
+    Serial.printf("heap %u KB (min %u KB), psram free %u KB\n", ESP.getFreeHeap() / 1024,
+                  ESP.getMinFreeHeap() / 1024, ESP.getFreePsram() / 1024);
+    for (const char* n : names) {
+        TaskHandle_t h = xTaskGetHandle(n);
+        if (h) Serial.printf("  %-8s stack free %5u B  prio %u\n", n, uxTaskGetStackHighWaterMark(h), uxTaskPriorityGet(h));
+    }
+}
+
+// "shot" (tools/screenshot.py), "shot sd", "info"/"tasks", "toggle <1..3>",
+// "page <0..3>", "scroll <px>", "devices", "wifi" (open + scan), "theme <0..2>",
+// "sensor ok|warn|error|loading|stale|sim".
+void consoleTask(void*) {
+    char line[48];
+    uint8_t len = 0;
+    for (;;) {
+        while (Serial.available()) {
+            const char c = Serial.read();
+            if (c != '\n' && c != '\r') {
+                if (len < sizeof(line) - 1) line[len++] = c;
+                continue;
+            }
+            line[len] = 0;
+            len = 0;
+            if (!line[0]) continue;
+            if (strcmp(line, "shot") == 0) {
+                // Core log_x() from other tasks would corrupt the binary stream.
+                Serial.setDebugOutput(false);
+                hmi::screenshot(Serial);
+                Serial.flush();
+                Serial.setDebugOutput(true);
+            } else if (strcmp(line, "shot sd") == 0) {
+                storage::requestScreenshot();
+            } else if (strcmp(line, "info") == 0 || strcmp(line, "tasks") == 0) {
+                printTasks();
+            } else if (strncmp(line, "toggle ", 7) == 0) {
+                postApp(AppMsg{AppCmd::RelayToggle, static_cast<uint8_t>(atoi(line + 7) - 1), false, {}, {}});
+            } else if (strncmp(line, "page ", 5) == 0) {
+                hmi::showPage(atoi(line + 5));
+            } else if (strncmp(line, "scroll ", 7) == 0) {
+                hmi::scrollPage(atoi(line + 7));
+            } else if (strcmp(line, "devices") == 0) {
+                tasmota::print(Serial);
+            } else if (strcmp(line, "wifi") == 0) {
+                hmi::showPage(3);
+                postNet(NetMsg{NetCmd::Scan, {}, {}});
+            } else if (strncmp(line, "theme ", 6) == 0) {
+                hmi::setTheme(atoi(line + 6));
+            } else if (strncmp(line, "sensor ", 7) == 0) {
+                AppMsg m{AppCmd::SensorPreview, 0, false, {}, {}};
+                strlcpy(m.text, line + 7, sizeof(m.text));
+                postApp(m);
+            } else {
+                Serial.printf("? %s\n", line);
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+}
+
+// ===================== HMI callbacks (run in the ui task: post only) =====================
+
+void onRelayToggle(uint8_t i) { postApp(AppMsg{AppCmd::RelayToggle, i, false, {}, {}}); }
+void onBrightnessChanged(uint8_t pct) { postApp(AppMsg{AppCmd::SaveBrightness, pct, false, {}, {}}); }
+void onAutoDimChanged(bool on) { postApp(AppMsg{AppCmd::SaveAutoDim, 0, on, {}, {}}); }
+void onThemeChanged(uint8_t i) { postApp(AppMsg{AppCmd::SaveTheme, i, false, {}, {}}); }
+void onBacklight(uint8_t pct) { display.setBrightness(map(pct, 0, 100, 0, 255)); }
+void onWifiScan() { postNet(NetMsg{NetCmd::Scan, {}, {}}); }
+void onWifiJoin(const char* ssid, const char* pass) {
+    NetMsg m{NetCmd::Join, {}, {}};
+    strlcpy(m.ssid, ssid, sizeof(m.ssid));
+    strlcpy(m.pass, pass, sizeof(m.pass));
+    postNet(m);
+}
+void onFirmwareUpdate() { storage::requestFirmwareUpdate(); }
+void onDeviceToggle(uint8_t device, uint8_t channel) { tasmota::toggle(device, channel); }
+
+// Tasmota devices: /config.json "tasmota" if present, else config.h.
+uint8_t deviceList(hmi::DeviceInfo* out) {
+    if (g_sdConfig.tasmotaCount) {
+        memcpy(out, g_sdConfig.tasmota, sizeof(hmi::DeviceInfo) * g_sdConfig.tasmotaCount);
+        return g_sdConfig.tasmotaCount;
+    }
+    const struct { const char* name; const char* host; uint8_t channels; } defaults[] = {
+        {TASMOTA_1_NAME, TASMOTA_1_HOST, TASMOTA_1_CHANNELS},
+        {TASMOTA_2_NAME, TASMOTA_2_HOST, TASMOTA_2_CHANNELS},
+    };
+    uint8_t n = 0;
+    for (const auto& d : defaults) {
+        out[n] = hmi::DeviceInfo{};
+        strlcpy(out[n].name, d.name, sizeof(out[n].name));
+        strlcpy(out[n].host, d.host, sizeof(out[n].host));
+        out[n].channels = d.channels;
+        n++;
+    }
+    return n;
+}
+
+}  // namespace
+
+void setup() {
+    Serial.begin(SERIAL_BAUDRATE);
+    delay(100);
+    Serial.println("\n\n=== ESP32-4848S040 Smart Home Panel ===");
+    Serial.printf("Firmware: %s  Hardware: %s\n", FIRMWARE_VERSION, HARDWARE_VERSION);
+    Serial.printf("Reset reason: %d\n", (int)esp_reset_reason());  // 1=power-on/EN, 4=panic, 6/7=watchdog, 9=brownout
+    g_bootTime = millis();
+
+    for (int i = 0; i < RELAY_COUNT; i++) {
+        pinMode(kRelayPins[i], OUTPUT);
+        digitalWrite(kRelayPins[i], LOW);  // Active HIGH relay, OFF = LOW
+        g_relay[i] = false;
+        g_relayChange[i] = millis();
+    }
+
+    if (!display.begin()) Serial.println("!!! display.begin() FAILED !!!");
+    // The known-good reference firmware drives GPIO38 high right after begin();
+    // brightness is then handled by Light_PWM via setBrightness().
+    pinMode(PIN_DISP_BL, OUTPUT);
+    digitalWrite(PIN_DISP_BL, HIGH);
+
+    // SD after the display: SCK/MOSI are shared with the ST7701 init bus.
+    storage::begin();
+    storage::logEvent("Boot fw=%s reset=%d", FIRMWARE_VERSION, (int)esp_reset_reason());
+    if (storage::loadConfig(g_sdConfig)) {
+        if (g_sdConfig.mqttHost[0]) strlcpy(g_mqttHost, g_sdConfig.mqttHost, sizeof(g_mqttHost));
+        if (g_sdConfig.mqttPort) g_mqttPort = g_sdConfig.mqttPort;
+        if (g_sdConfig.mqttUser[0]) strlcpy(g_mqttUser, g_sdConfig.mqttUser, sizeof(g_mqttUser));
+        if (g_sdConfig.mqttPass[0]) strlcpy(g_mqttPass, g_sdConfig.mqttPass, sizeof(g_mqttPass));
+        hmi::setRoomName(g_sdConfig.room);
+    }
+
+    g_prefs.begin("hmi", false);
+    hmi::setBrightness(g_prefs.getUChar("bright", 80));
+    hmi::setAutoDim(g_prefs.getBool("autodim", true));
+    hmi::setTheme(g_prefs.getUChar("theme", 0));
+
+    // Make the task watchdog fatal (10 s): a hung ui/app task reboots instead of freezing.
+    esp_task_wdt_init(10, true);
+
+    g_appQ = xQueueCreate(16, sizeof(AppMsg));
+    g_netQ = xQueueCreate(4, sizeof(NetMsg));
+
+    hmi::Callbacks cb;
+    cb.relayToggle = onRelayToggle;
+    cb.brightnessChanged = onBrightnessChanged;
+    cb.autoDimChanged = onAutoDimChanged;
+    cb.themeChanged = onThemeChanged;
+    cb.backlight = onBacklight;
+    cb.wifiScan = onWifiScan;
+    cb.wifiJoin = onWifiJoin;
+    cb.firmwareUpdate = onFirmwareUpdate;
+    cb.deviceToggle = onDeviceToggle;
+    static hmi::DeviceInfo devices[hmi::kMaxDevices];
+    const uint8_t deviceCount = deviceList(devices);
+    hmi::configureDevices(devices, deviceCount);  // the Control page is built for these
+    hmi::begin(display, cb);  // "ui" task, core 1
+    tasmota::start(devices, deviceCount);
+
+    storage::start();
+    xTaskCreatePinnedToCore(appTask, "app", 4 * 1024, nullptr, 4, nullptr, 1);
+    xTaskCreatePinnedToCore(netTask, "net", 8 * 1024, nullptr, 2, nullptr, 0);
+    xTaskCreatePinnedToCore(consoleTask, "console", 4 * 1024, nullptr, 1, nullptr, 0);
+    Serial.println("Tasks started: ui app net devices storage console");
+}
+
+// Everything runs in dedicated tasks; free the Arduino loop task.
+void loop() { vTaskDelete(nullptr); }
