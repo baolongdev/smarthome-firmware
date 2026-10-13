@@ -15,7 +15,17 @@ build/
 # Cloned upstream/reference projects used for hardware validation
 reference/
 
-# IDE
+# Tool output / caches (tools/*.py, tools/gen_lvgl_fonts.sh)
+/*.png
+/*.ppm
+/*.bmp
+__pycache__/
+*.pyc
+node_modules/
+*.log
+
+# IDE / agents
+.kilo/
 .idea/
 *.swp
 *.swo
