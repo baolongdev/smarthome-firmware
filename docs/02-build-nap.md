@@ -30,7 +30,7 @@ framework = arduino
 board_build.flash_mode = qio
 board_build.flash_size = 16MB
 board_upload.flash_size = 16MB          ; (!) xem 2.3
-board_build.partitions = default_16MB.csv
+board_build.partitions = partitions_16MB.csv
 board_build.arduino.memory_type = qio_opi   ; flash QIO + PSRAM Octal
 
 build_flags =
@@ -65,7 +65,7 @@ boards_dir = reference/LovyanGFX-GUITION-ESP32-4848S040/board
 1. Board JSON custom khai báo `"upload": {"flash_size": "8MB"}`. PlatformIO
    **ưu tiên giá trị này** hơn `board_build.flash_size`, nên header của
    bootloader/firmware ghi 8 MB (byte thứ 4 của `bootloader.bin` = `0x3f`).
-2. Bảng phân vùng `default_16MB.csv` dùng tới 0xFFFFFF, nên bootloader coi bảng
+2. Bảng phân vùng `partitions_16MB.csv` dùng tới 0xFFFFFF, nên bootloader coi bảng
    phân vùng sai và **không chạy app**.
 3. Lỗi này hoàn toàn im lặng:
    - eFuse `UART_PRINT_CONTROL` đã tắt log ROM;
@@ -73,7 +73,7 @@ boards_dir = reference/LovyanGFX-GUITION-ESP32-4848S040/board
 
 **Cách tìm ra:** nạp một sketch tối giản (chỉ in chữ), rồi thêm lần lượt từng
 dòng của `platformio.ini` cho đến khi mất log. Dòng gây lỗi là
-`board_build.partitions = default_16MB.csv` (vì header vẫn là 8 MB).
+`board_build.partitions = partitions_16MB.csv` (vì header vẫn là 8 MB).
 
 **Kiểm tra nhanh** (phải ra `0x4f` = 16 MB):
 

@@ -88,6 +88,8 @@ void setDeviceState(uint8_t device, uint8_t mask, bool online);  // 0..100 shows
 
 void showPage(uint8_t page);  // 0 Tổng quan, 1 Điều khiển, 2 Cài đặt, 3 Wi-Fi (async)
 void scrollPage(int16_t dy);  // scroll the current page by dy px (console testing)
+// Synthetic touch drag through the real LVGL input path (console testing).
+void injectDrag(int16_t x, int16_t y0, int16_t y1, uint16_t ms);
 
 // Screenshots: the UI task takes the snapshot, the calling task streams it.
 // RLE RGB565 dump of the current screen for tools/screenshot.py.

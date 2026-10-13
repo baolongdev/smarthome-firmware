@@ -13,7 +13,7 @@ Ghi theo thứ tự thời gian, mỗi mục gồm: triệu chứng → cách t�
      `otadata` trỏ vào app0.
   2. Đọc eFuse: thấy `UART_PRINT_CONTROL = Disabled`.
   3. Nạp sketch tối giản: board mặc định thì có log; board JSON custom cộng
-     `default_16MB.csv` thì mất log.
+     `partitions_16MB.csv` thì mất log.
 - **Nguyên nhân:**
   - Board JSON khai báo `upload.flash_size = 8MB`, nên header ghi 8 MB, trong
     khi bảng phân vùng là 16 MB. Bootloader từ chối chạy app.
@@ -133,6 +133,41 @@ kết nối, báo lỗi theo mã lý do, lưu vào NVS.
 Board chuyển từ COM4 sang **COM18** sau khi cắm cổng USB khác. Đã xác nhận
 đúng board bằng MAC `98:3d:ae:e1:8b:bc`.
 
+## 14. Vuốt không cuộn được trang Cài đặt / Điều khiển
+
+- **Triệu chứng:** người dùng báo "scroll bị crash". Hỏi lại thì là "**chưa bao
+  giờ cuộn được**".
+- **Kiểm tra:**
+  - cuộn bằng API (`lv_obj_scroll_by`) 48 lần không crash, nên trang có cuộn
+    được, chỉ là thao tác vuốt không tới được trang;
+  - đọc mã LVGL 9.2: `lv_obj_hit_test()` trả về `false` cho mọi đối tượng
+    **không có cờ `CLICKABLE`**.
+- **Nguyên nhân:**
+  - `theme::box()` và `label()` xoá cờ `CLICKABLE`, nên trang, thẻ, tiêu đề
+    nhóm và nhãn đều "vô hình" với cảm ứng;
+  - vuốt bắt đầu ở đó thì LVGL lùi lên tới màn hình gốc, mà màn hình gốc không
+    cuộn được, nên không có gì xảy ra;
+  - trang chỉ cuộn được nếu ngón tay bắt đầu đúng trên một hàng bấm được.
+- **Sửa:** `makeScrollPage()` và khung danh sách Wi-Fi bật lại cờ `CLICKABLE`.
+  Hàng bấm được vẫn nhận lượt chạm trước, vì LVGL tìm từ phần tử con sâu nhất.
+- **Kiểm chứng:** thêm lệnh `drag` (cảm ứng giả lập trong `hmi_port.cpp`).
+  Vuốt từ vùng không bấm được: trang Cài đặt cuộn tới cuối; trang Điều khiển
+  cuộn tới nhóm TX Ultimate 4C (ảnh chụp trước/sau).
+- **Thay đổi đi kèm (đã có sẵn trong working tree):**
+  - label không còn tự cuộn được;
+  - chỉ trang đang hiển thị mới được cập nhật;
+  - thông tin hệ thống cập nhật mỗi 5 giây;
+  - dùng file `partitions_16MB.csv` riêng (bố cục giống `default_16MB.csv`).
+
+## 15. Nhận diện Trường Đại học Bách Khoa
+
+- Logo BK có viền trắng (đúng quy định cho nền tối) xuất hiện ở màn khởi động,
+  header và thẻ Giới thiệu; thêm bộ màu "Bách Khoa" (`#1488DB`).
+- Thêm tool `tools/png_to_lvgl.py` (PNG → ảnh LVGL RGB565A8, có tuỳ chọn viền).
+- **Lỗi biên dịch:** `LV_IMAGE_DECLARE` của LVGL 9 không tự thêm `;`, khác với
+  `LV_FONT_DECLARE`.
+- Board đổi lại từ COM18 về **COM4** khi cắm lại vào cổng USB cũ.
+
 ---
 
 ## Việc còn lại
@@ -143,7 +178,7 @@ Board chuyển từ COM4 sang **COM18** sau khi cắm cổng USB khác. Đã xá
 | Thử điều khiển TX Ultimate từ panel | Wi-Fi ổn định |
 | Sonoff M5-3C | xác nhận thiết bị đang bật và IP hiện tại |
 | MQTT | địa chỉ broker thật trong mạng `172.28.182.x` |
-| Kiểm tra lỗi treo khi cuộn | người dùng cuộn trang Cài đặt trên máy thật |
+| Xác nhận cuộn bằng tay trên máy thật | đã kiểm chứng bằng `drag` giả lập, cần người dùng vuốt thử |
 | Thử cập nhật firmware từ thẻ, nhập mật khẩu Wi-Fi | thao tác chạm thật |
 | Cảm biến thật | nối cảm biến hoặc gửi số liệu qua MQTT `.../sensor` |
 | Xử lý `MQTT_TOPIC_CONFIG`, MQTT OTA | chưa cài đặt |

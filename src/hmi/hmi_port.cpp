@@ -16,6 +16,13 @@ void (*s_onWake)() = nullptr;
 bool s_guard = false;
 bool s_swallowing = false;
 
+struct SynthDrag {
+    int16_t x, y0, y1;
+    uint16_t ms;
+    uint32_t start;
+    volatile bool active;
+} s_drag{};
+
 uint32_t tickCb() { return millis(); }
 
 void flushCb(lv_display_t* disp, const lv_area_t* area, uint8_t* px) {
@@ -27,6 +34,20 @@ void flushCb(lv_display_t* disp, const lv_area_t* area, uint8_t* px) {
 }
 
 void touchCb(lv_indev_t*, lv_indev_data_t* data) {
+    if (s_drag.active) {
+        const uint32_t t = millis() - s_drag.start;
+        if (t > s_drag.ms + 100u) {  // hold briefly at the end, then lift
+            s_drag.active = false;
+            data->state = LV_INDEV_STATE_RELEASED;
+            return;
+        }
+        const uint32_t k = t > s_drag.ms ? s_drag.ms : t;
+        data->point.x = s_drag.x;
+        data->point.y = s_drag.y0 + (int32_t)(s_drag.y1 - s_drag.y0) * (int32_t)k / (int32_t)s_drag.ms;
+        data->state = LV_INDEV_STATE_PRESSED;
+        lv_display_trigger_activity(nullptr);
+        return;
+    }
     uint16_t x = 0, y = 0;
     const bool down = s_lcd->getTouch(&x, &y) > 0;
 
@@ -105,6 +126,15 @@ void begin(LGFX& lcd) {
     lv_indev_set_read_cb(keys, keypadCb);
     lv_indev_set_group(keys, lv_group_get_default());
 #endif
+}
+
+void injectDrag(int16_t x, int16_t y0, int16_t y1, uint16_t ms) {
+    s_drag.x = x;
+    s_drag.y0 = y0;
+    s_drag.y1 = y1;
+    s_drag.ms = ms ? ms : 1;
+    s_drag.start = millis();
+    s_drag.active = true;  // set last: the UI task polls this flag
 }
 
 void armWakeGuard(void (*onWake)()) {

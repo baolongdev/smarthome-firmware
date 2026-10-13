@@ -7,10 +7,11 @@
 | `tasks` / `info` | heap, PSRAM trống, stack còn trống và ưu tiên của từng task |
 | `toggle 1` .. `toggle 3` | bật/tắt relay trên panel |
 | `page 0` .. `page 3` | chuyển trang: Tổng quan / Điều khiển / Cài đặt / Wi-Fi |
-| `scroll <px>` | cuộn trang hiện tại (dương = xuống) |
+| `scroll <px>` | cuộn trang hiện tại bằng API (dương = xuống), **không** đi qua đường cảm ứng |
+| `drag x y0 y1 [ms]` | giả lập một lần vuốt dọc qua **đúng đường xử lý cảm ứng** của LVGL (hit-test, kéo, quán tính), ví dụ `drag 240 380 120 300` |
 | `wifi` | mở trang Wi-Fi và quét |
 | `devices` | trạng thái các thiết bị Tasmota |
-| `theme 0` .. `theme 2` | đổi bộ màu Lime / Ember / Cobalt (không lưu) |
+| `theme 0` .. `theme 3` | đổi bộ màu Lime / Ember / Cobalt / Bách Khoa (không lưu) |
 | `sensor ok\|warn\|error\|loading\|stale` | xem trước các trạng thái của gauge (tắt giả lập) |
 | `sensor sim` | bật lại giả lập cảm biến |
 | `shot` | gửi ảnh màn hình qua serial (dùng với `tools/screenshot.py`) |
@@ -74,6 +75,7 @@ lại được sau khi board đã tự khởi động lại.
 | `pio run` lỗi `No module named 'intelhex'` | `~/.platformio/penv/Scripts/python -m pip install intelhex` |
 | `Could not open COMx, the port is busy` | đóng Serial Monitor/Arduino IDE, hoặc board đã sang COM khác (kiểm tra bằng `read_mac`) |
 | Đèn nền sáng, màn hình đen | sai driver/timing. Dùng `lgfx_4848s040_reference.h`, kiểm tra `display.begin()` |
+| Vuốt không cuộn được trang | đối tượng không có cờ `CLICKABLE` bị LVGL bỏ qua khi hit-test. Trang/khung cuộn phải `CLICKABLE` (xem `makeScrollPage()`). Kiểm tra bằng lệnh `drag` |
 | UI khựng/treo định kỳ, nhất là khi cuộn | có thao tác chậm chạy trong task `ui` hoặc trong callback. Chuyển sang task khác (03-kien-truc-rtos.md, mục 3.4) |
 | Board tự khởi động lại, mã reset 6 | task `ui`/`app` bị chặn quá 10 giây (watchdog) |
 | Ảnh chụp từ `screenshot.py` bị sọc/hỏng | dùng `screenshot.py` bản mới (định dạng base64 theo dòng) |

@@ -72,6 +72,7 @@ struct Ui {
     lv_obj_t* wifiList;
     lv_obj_t* wifiRefresh;
     lv_obj_t* wifiSpinner;
+    char wifiRenderedSsid[33] = "";
     // join sheet (full screen, above everything)
     lv_obj_t* sheet;
     lv_obj_t* sheetSsid;
@@ -94,6 +95,9 @@ Ui ui;
 // Copy of the model taken under ModelLock at the start of every UI tick.  All
 // widget code and event callbacks read this, never the shared model.
 Model s_snap;
+
+void applySystem(const Model& m);
+void applyWifiList(const Model& m);
 
 const char* const kRelayNames[RELAY_COUNT] = {RELAY_NAME_1, RELAY_NAME_2, RELAY_NAME_3};
 const char* const kRelayIcons[RELAY_COUNT] = {ICON_BULB, ICON_SNOWFLAKE, ICON_PLUG_ZAP};
@@ -184,10 +188,13 @@ void setChecked(lv_obj_t* o, bool on) {
 // ---------- header + navigation ----------
 
 void buildHeader(lv_obj_t* scr) {
+    lv_obj_t* logo = lv_image_create(scr);  // BK mark before the room name
+    lv_image_set_src(logo, &bk_logo_32);
+    lv_obj_set_pos(logo, kMargin, 20);
     ui.name = label(scr, &hmi_font_16_sb, text(), s_snap.room);
-    lv_obj_set_pos(ui.name, kMargin, 16);
+    lv_obj_set_pos(ui.name, kMargin + 42, 16);
     ui.caption = label(scr, &hmi_font_13_r, muted(), "Đang kết nối…");
-    lv_obj_set_pos(ui.caption, kMargin, 38);
+    lv_obj_set_pos(ui.caption, kMargin + 42, 38);
 
     lv_obj_t* right = flexRow(scr, 12);
     lv_obj_set_height(right, 40);
@@ -212,6 +219,10 @@ void selectPage(uint8_t p) {
         lv_obj_set_style_text_color(ui.navText[i], on ? text() : muted(), 0);
     }
     ui.current = p;
+    // Keep dynamic pages quiet while hidden; refresh their cached model when
+    // they become visible so scrolling does not compete with off-screen work.
+    if (p == P_SETTINGS) applySystem(s_snap);
+    if (p == P_WIFI) applyWifiList(s_snap);
 }
 
 void buildNav(lv_obj_t* scr) {
@@ -465,6 +476,11 @@ void rowPressable(lv_obj_t* row);
 
 // Vertical scrolling page with flex column layout (Control, Settings).
 void makeScrollPage(lv_obj_t* page) {
+    // LVGL hit-tests only CLICKABLE objects.  box() clears that flag, so a drag
+    // starting on a gap, card, title or label used to resolve to the (not
+    // scrollable) screen and the page never scrolled.  A clickable page catches
+    // those drags; clickable rows still get their taps first.
+    lv_obj_add_flag(page, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(page, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(page, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(page, LV_SCROLLBAR_MODE_ACTIVE);
@@ -762,8 +778,21 @@ void buildSettings(lv_obj_t* page) {
     ui.sysMqtt = settingsRow(sys, ICON_SERVER, "MQTT", false);
     ui.sysIp = settingsRow(sys, ICON_GLOBE, "Địa chỉ IP", false);
     ui.sysMem = settingsRow(sys, ICON_MEMORY, "Bộ nhớ trống", false);
-    ui.sysUptime = settingsRow(sys, ICON_CLOCK, "Thời gian chạy", false);
-    lv_label_set_text(settingsRow(sys, ICON_INFO, "Firmware", true), FIRMWARE_VERSION);
+    ui.sysUptime = settingsRow(sys, ICON_CLOCK, "Thời gian chạy", true);
+
+    // --- about: HCMUT identity + firmware ---
+    sectionTitle(page, "GIỚI THIỆU");
+    lv_obj_t* about = settingsCard(page);
+    lv_obj_set_style_pad_all(about, 16, 0);
+    lv_obj_set_flex_flow(about, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(about, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(about, 14, 0);
+    lv_obj_t* mark = lv_image_create(about);
+    lv_image_set_src(mark, &bk_logo_48);
+    lv_obj_t* col = flexCol(about, 2);
+    label(col, &hmi_font_12_sb, muted(), "ĐẠI HỌC QUỐC GIA TP.HCM");
+    label(col, &hmi_font_14_m, text(), "TRƯỜNG ĐẠI HỌC BÁCH KHOA");
+    label(col, &hmi_font_13_r, muted(), "Smart Home Panel · v" FIRMWARE_VERSION);
 }
 
 void applyStorage(const Model& m) {
@@ -825,6 +854,7 @@ void buildWifi(lv_obj_t* page) {
     lv_obj_t* scroll = box(page);
     lv_obj_set_pos(scroll, kMargin, 56);
     lv_obj_set_size(scroll, 448, kContentH - 56);
+    lv_obj_add_flag(scroll, LV_OBJ_FLAG_CLICKABLE);  // see makeScrollPage()
     lv_obj_add_flag(scroll, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(scroll, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(scroll, LV_SCROLLBAR_MODE_ACTIVE);
@@ -842,6 +872,7 @@ const char* signalIcon(int8_t rssi) {
 }
 
 void applyWifiList(const Model& m) {
+    strlcpy(ui.wifiRenderedSsid, m.sys.ssid, sizeof(ui.wifiRenderedSsid));
     if (m.scanning) {
         lv_obj_add_flag(ui.wifiRefresh, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(ui.wifiSpinner, LV_OBJ_FLAG_HIDDEN);
@@ -1179,6 +1210,38 @@ void updateDim() {
 
 // ---------- public ----------
 
+// Boot splash with the HCMUT identity (brand guide lockup: logo, ĐHQG-HCM line,
+// school name).  Shown once at power-up, fades out, then deletes itself; both
+// the fade and the delete are bound to the object, so a rebuild during the
+// splash simply removes it.
+void buildSplash(lv_obj_t* scr) {
+    lv_obj_t* s = box(scr);
+    lv_obj_set_size(s, 480, 480);
+    lv_obj_set_style_bg_opa(s, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(s, bg(), 0);
+    lv_obj_add_flag(s, LV_OBJ_FLAG_CLICKABLE);  // swallow taps while it is up
+    lv_obj_set_flex_flow(s, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(s, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(s, 6, 0);
+
+    lv_obj_t* logo = lv_image_create(s);
+    lv_image_set_src(logo, &bk_logo_132);
+    lv_obj_set_style_margin_bottom(logo, 22, 0);
+    lv_obj_t* top = label(s, &hmi_font_12_sb, muted(), "ĐẠI HỌC QUỐC GIA TP.HCM");
+    lv_obj_set_style_text_letter_space(top, 1, 0);
+    label(s, &hmi_font_16_sb, text(), "TRƯỜNG ĐẠI HỌC BÁCH KHOA");
+    lv_obj_t* bar = box(s);
+    lv_obj_set_size(bar, 32, 3);
+    lv_obj_set_style_radius(bar, 2, 0);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(0x1488DB), 0);  // BK blue, whatever the palette
+    lv_obj_set_style_margin_ver(bar, 10, 0);
+    label(s, &hmi_font_13_r, muted(), "Smart Home Panel");
+
+    lv_obj_fade_out(s, 350, 1800);
+    lv_obj_delete_delayed(s, 2200);
+}
+
 // Build (or rebuild after a palette change) every widget for the current palette.
 void buildAll() {
     const Callbacks cb = ui.cb;
@@ -1211,6 +1274,11 @@ void buildAll() {
     buildSheet(scr);
     buildUpdateOverlay(scr);
     selectPage(page);
+    static bool splashShown = false;
+    if (!splashShown) {
+        splashShown = true;
+        buildSplash(scr);
+    }
 }
 
 // ---------- UI task ----------
@@ -1267,8 +1335,9 @@ void tick() {
         if (!ui.dimmed && ui.cb.backlight) ui.cb.backlight(m.brightness);
     }
     if (d & D_AUTODIM) setChecked(ui.dimSwitch, m.autoDim);
-    if (d & D_SYSTEM) applySystem(m);
-    if (d & (D_WIFI_LIST | D_SYSTEM | D_LINK)) applyWifiList(m);  // "Đã kết nối" marker
+    if ((d & D_SYSTEM) && ui.current == P_SETTINGS) applySystem(m);
+    const bool wifiSsidChanged = (d & D_SYSTEM) && strcmp(ui.wifiRenderedSsid, m.sys.ssid) != 0;
+    if ((d & (D_WIFI_LIST | D_LINK) || wifiSsidChanged) && ui.current == P_WIFI) applyWifiList(m);
     if (d & D_WIFI_JOIN) applyJoin(m);
     if (d & D_STORAGE) applyStorage(m);
     if (d & D_UPDATE) applyUpdate(m);
@@ -1325,6 +1394,8 @@ void showPage(uint8_t page) {
 
 // Snapshot is taken by the UI task; encoding/streaming runs in the caller's
 // task so a slow serial link or SD card never stalls the UI.
+void injectDrag(int16_t x, int16_t y0, int16_t y1, uint16_t ms) { port::injectDrag(x, y0, y1, ms); }
+
 void scrollPage(int16_t dy) {
     Request r{REQ_SCROLL, static_cast<uint8_t>(static_cast<int8_t>(constrain(dy / 4, -127, 127))), nullptr, nullptr};
     if (s_requests) xQueueSend(s_requests, &r, 0);

@@ -7,9 +7,9 @@ Panel điều khiển nhà thông minh trên màn hình cảm ứng 4" 480×480,
 - Thẻ nhớ TF dùng cho log, cấu hình và cập nhật firmware.
 - Điều khiển relay trên panel và các thiết bị Tasmota trong mạng LAN.
 
-| Tổng quan | Điều khiển | Tổng quan (bộ màu Ember) | Cài đặt |
+| Khởi động | Tổng quan (bộ màu Bách Khoa) | Điều khiển | Cài đặt → Giới thiệu |
 |---|---|---|---|
-| ![home](images/hmi-home.png) | ![control](images/hmi-control.png) | ![ember](images/hmi-ember.png) | ![settings](images/hmi-settings.png) |
+| ![splash](images/hmi-splash.png) | ![bk](images/hmi-bk.png) | ![control](images/hmi-control.png) | ![about](images/hmi-about.png) |
 
 *(Ảnh chụp từ framebuffer thật bằng `tools/screenshot.py`.)*
 
@@ -90,5 +90,6 @@ Bản thiết kế UI/UX (Home Dashboard, các trạng thái, design system, pix
 nằm trên canvas **"ESP32 480 HMI"**. Firmware hiện tại khác canvas ở các điểm:
 
 - Tab giữa là **Điều khiển** (relay + Tasmota) thay cho "Chỉ số".
-- Có 3 bộ màu Lime / Ember / Cobalt trên nền đen-xám, thay cho bảng màu teal ban đầu.
+- Có 4 bộ màu Lime / Ember / Cobalt / Bách Khoa trên nền đen-xám, thay cho bảng màu teal ban đầu.
+- Có logo Bách Khoa ở màn khởi động, header và mục Giới thiệu.
 - Có thêm màn hình Wi-Fi và mục Thẻ nhớ trong Cài đặt.

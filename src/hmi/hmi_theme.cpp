@@ -17,6 +17,8 @@ const Palette kPalettes[kPaletteCount] = {
     {"Lime",   0xC5F82A, 0x9B87FF, 0x4DA3FF, 0xFFC94D, 0x3DDC97, 0xFF9F1C, 0xFF4D5E},
     {"Ember",  0xFF6B2C, 0xB794FF, 0x4DA3FF, 0xFFD166, 0x3DDC97, 0xFFD23F, 0xFF3B4E},
     {"Cobalt", 0x4C7DFF, 0xC084FC, 0x38D9F5, 0xFFC94D, 0x3DDC97, 0xFFB020, 0xFF4D5E},
+    // HCMUT brand blue #1488DB (brand guide p.04) as the signature colour.
+    {"Bách Khoa", 0x1488DB, 0xA78BFA, 0x5AC8FA, 0xFFC94D, 0x3DDC97, 0xFF9F1C, 0xFF4D5E},
 };
 
 namespace {
@@ -71,6 +73,10 @@ lv_obj_t* box(lv_obj_t* parent) {
 
 lv_obj_t* label(lv_obj_t* parent, const lv_font_t* font, lv_color_t color, const char* text) {
     lv_obj_t* l = lv_label_create(parent);
+    // LVGL labels are scrollable by default. They are display-only here, and
+    // an inner scrollable label can capture a drag instead of chaining it to
+    // the Control/Settings page.
+    lv_obj_remove_flag(l, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_text_font(l, font, 0);
     lv_obj_set_style_text_color(l, color, 0);
     lv_label_set_text(l, text);

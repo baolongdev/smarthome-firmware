@@ -261,6 +261,7 @@ void maintainMqtt(uint32_t now) {
 // Link, clock and system info for the header / Settings, once a second.
 void feedHmiStatus(uint32_t now) {
     static uint32_t last = 0;
+    static uint32_t lastSystemInfo = 0;
     if (last && now - last < 1000) return;
     last = now;
     const bool up = wifimgr::connected();
@@ -285,7 +286,12 @@ void feedHmiStatus(uint32_t now) {
     info.heapKB = heap / 1024;
     info.psramKB = ESP.getFreePsram() / 1024;
     info.uptimeS = (now - g_bootTime) / 1000;
-    hmi::setSystemInfo(info);
+    // RSSI and heap can vary every second. The Settings page only needs a
+    // human-readable refresh every few seconds; avoid repeated layout work.
+    if (!lastSystemInfo || now - lastSystemInfo >= 5000) {
+        lastSystemInfo = now;
+        hmi::setSystemInfo(info);
+    }
 }
 
 void netTask(void*) {
@@ -343,7 +349,7 @@ void printTasks() {
 }
 
 // "shot" (tools/screenshot.py), "shot sd", "info"/"tasks", "toggle <1..3>",
-// "page <0..3>", "scroll <px>", "devices", "wifi" (open + scan), "theme <0..2>",
+// "page <0..3>", "scroll <px>", "drag x y0 y1 [ms]", "devices", "wifi" (open + scan), "theme <0..2>",
 // "sensor ok|warn|error|loading|stale|sim".
 void consoleTask(void*) {
     char line[48];
@@ -374,6 +380,10 @@ void consoleTask(void*) {
                 hmi::showPage(atoi(line + 5));
             } else if (strncmp(line, "scroll ", 7) == 0) {
                 hmi::scrollPage(atoi(line + 7));
+            } else if (strncmp(line, "drag ", 5) == 0) {
+                int x = 240, y0 = 300, y1 = 120, ms = 300;  // "drag x y0 y1 [ms]"
+                sscanf(line + 5, "%d %d %d %d", &x, &y0, &y1, &ms);
+                hmi::injectDrag(x, y0, y1, ms);
             } else if (strcmp(line, "devices") == 0) {
                 tasmota::print(Serial);
             } else if (strcmp(line, "wifi") == 0) {

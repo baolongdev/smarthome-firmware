@@ -78,7 +78,7 @@ Firmware đã tối ưu phía phần mềm (xem [05-ket-noi.md](05-ket-noi.md)),
 | `DIS_USB_SERIAL_JTAG` | False | |
 | Flash type | quad | |
 
-## 1.6 Bảng phân vùng (`default_16MB.csv`)
+## 1.6 Bảng phân vùng (`partitions_16MB.csv`)
 
 | Tên | Loại | Offset | Kích thước |
 |---|---|---|---|
@@ -89,4 +89,5 @@ Firmware đã tối ưu phía phần mềm (xem [05-ket-noi.md](05-ket-noi.md)),
 | spiffs | data/spiffs | 0xC90000 | 3456 KB (hiện không dùng; font đã biên dịch vào firmware) |
 | coredump | data/coredump | 0xFF0000 | 64 KB |
 
-Firmware hiện chiếm khoảng **1,3 MB / 6,4 MB** (19,9%).
+Hai khe OTA dùng chung vùng app 12.800 KB; mỗi khe chứa tối đa 6400 KB. Firmware
+hiện chiếm khoảng **1,3 MB / 6,4 MB** (19,9%).

@@ -12,7 +12,35 @@
   có cờ bật, và LVGL chỉ invalidate vùng của các widget đó.
 - **Chu kỳ:** task `ui` chạy mỗi 5 ms; `LV_DEF_REFR_PERIOD` = 20 ms.
 
-## 4.2 Khung màn hình
+## 4.2 Nhận diện Trường Đại học Bách Khoa
+
+Theo bộ nhận diện trong `docs/brand/source/brand-guidelines.pdf`:
+- **Màu thương hiệu:** xanh `#1488DB` và xanh đậm `#030391` (trang 04).
+- **Trên nền tối phải dùng logo có viền trắng** (trang 05).
+
+| Vị trí | Nội dung |
+|---|---|
+| **Màn khởi động** (1,8 giây, rồi mờ dần 350 ms) | logo 132 px; "ĐẠI HỌC QUỐC GIA TP.HCM"; "TRƯỜNG ĐẠI HỌC BÁCH KHOA"; vạch xanh `#1488DB`; "Smart Home Panel". Chỉ hiện lúc bật nguồn, không hiện lại khi đổi bộ màu; chạm vào lúc này không có tác dụng |
+| **Header** | logo 32 px trước tên phòng |
+| **Cài đặt → GIỚI THIỆU** | logo 48 px, tên ĐHQG-HCM, tên trường, phiên bản firmware (thay cho hàng "Firmware" cũ) |
+| **Bộ màu "Bách Khoa"** | màu chữ ký `#1488DB` (Cài đặt → Màu chủ đạo, hoặc `theme 3`) |
+
+**File logo:**
+- Ảnh gốc độ phân giải cao: `assets/brand/bk-logo.png` (1657×1674, lấy từ
+  bộ nhận diện).
+- Ảnh LVGL `src/hmi/images/bk_logo_{32,48,132}.c` (RGB565 + alpha) được sinh bằng:
+
+```bash
+python tools/png_to_lvgl.py assets/brand/bk-logo.png 48 bk_logo_48 src/hmi/images/bk_logo_48.c --outline
+```
+
+`--outline` thêm viền trắng theo cách sau: nới rộng hình dạng logo ở độ phân
+giải gấp 4, tô trắng, đặt logo lên trên, rồi mới thu nhỏ để mép viền mịn.
+Thêm logo/ảnh mới: sinh file `.c`, khai báo `LV_IMAGE_DECLARE(ten);` (**có dấu
+`;`**, macro của LVGL 9 không tự thêm) trong `hmi_theme.h`, rồi dùng
+`lv_image_set_src(obj, &ten)`.
+
+## 4.3 Khung màn hình
 
 ```
 y=0    ┌────────────────────────────────────────────┐
@@ -39,7 +67,7 @@ luôn hiển thị; các trang đổi bằng fade 200 ms.
 | Wi-Fi OK, MQTT lỗi | "Wi-Fi OK · MQTT mất kết nối" | trắng |
 | Mất Wi-Fi | "Mất kết nối · đang thử lại" | wifi-off màu cảnh báo |
 
-## 4.3 Các trang
+## 4.4 Các trang
 
 ### Tổng quan
 - **Gauge 270°** (232×232 tại x=124, y=64): vòng cung r=104, nét 12; số
@@ -72,7 +100,7 @@ luôn hiển thị; các trang đổi bằng fade 200 ms.
 | KẾT NỐI | Wi-Fi: "SSID · RSSI dBm" / "Mất kết nối" › | mở trang Wi-Fi và quét |
 | MÀN HÌNH | Độ sáng màn hình (slider 10–100%) | xem trước khi kéo, lưu NVS khi thả |
 | | Tự giảm sáng sau 30 giây (công tắc) | lưu NVS |
-| | Màu chủ đạo: Lime / Ember / Cobalt ● | chạm để đổi vòng, lưu NVS |
+| | Màu chủ đạo: Lime / Ember / Cobalt / Bách Khoa ● | chạm để đổi vòng, lưu NVS |
 | THẺ NHỚ | Thẻ nhớ: "Trống x / y GB" / "Không có thẻ" | |
 | | config.json: "Đã nạp" / "Không có tệp" | |
 | | Cập nhật firmware: "firmware.bin · x MB" | **chạm 2 lần** trong 4 giây để cài |
@@ -105,7 +133,7 @@ luôn hiển thị; các trang đổi bằng fade 200 ms.
 Phủ toàn màn hình, gồm icon tải xuống, thanh tiến trình và dòng "x% · không
 tắt nguồn". Board tự khởi động lại khi xong.
 
-## 4.4 Hành vi chung
+## 4.5 Hành vi chung
 
 - **Chạm → nhả mới kích hoạt:** nền đổi sang màu nhấn trong 150 ms. Trượt tay
   ra khỏi đối tượng thì huỷ.
@@ -119,7 +147,7 @@ tắt nguồn". Board tự khởi động lại khi xong.
   `HMI_BTN_OK_PIN` trong `config.h` để dùng nút vật lý (board này không còn
   chân trống).
 
-## 4.5 Bộ màu
+## 4.6 Bộ màu
 
 Nền đen và các lớp xám làm khung, giống nhau ở mọi bộ màu:
 
@@ -140,15 +168,16 @@ Mỗi bộ có màu chữ ký riêng, dùng cho vòng cung, công tắc bật, s
 | **Lime** (mặc định) | `#C5F82A` | `#9B87FF` | `#4DA3FF` | `#FFC94D` | `#3DDC97` | `#FF9F1C` | `#FF4D5E` |
 | **Ember** | `#FF6B2C` | `#B794FF` | `#4DA3FF` | `#FFD166` | `#3DDC97` | `#FFD23F` | `#FF3B4E` |
 | **Cobalt** | `#4C7DFF` | `#C084FC` | `#38D9F5` | `#FFC94D` | `#3DDC97` | `#FFB020` | `#FF4D5E` |
+| **Bách Khoa** | `#1488DB` | `#A78BFA` | `#5AC8FA` | `#FFC94D` | `#3DDC97` | `#FF9F1C` | `#FF4D5E` |
 
 - **Cảnh báo luôn khác sắc với màu chữ ký,** vì vậy Ember dùng vàng cho cảnh báo.
-- **Đổi bộ màu:** Cài đặt → Màu chủ đạo, hoặc lệnh `theme 0|1|2`. Task `ui` dựng
+- **Đổi bộ màu:** Cài đặt → Màu chủ đạo, hoặc lệnh `theme 0|1|2|3`. Task `ui` dựng
   lại toàn bộ widget (`lv_obj_clean` rồi build lại). Dữ liệu nằm trong model
   nên không mất.
 - **Thêm bộ màu:** thêm một dòng vào `kPalettes` (`src/hmi/hmi_theme.cpp`) và
   tăng `kPaletteCount` (`hmi_theme.h`).
 
-## 4.6 Font & icon
+## 4.7 Font & icon
 
 | Font | Nguồn | Dùng |
 |---|---|---|
@@ -184,7 +213,7 @@ server, globe, info, triangle-alert, circle-x, thermometer, palette,
 chevron-right, lock, refresh-cw, arrow-left, eye, eye-off, download,
 hard-drive, file-text, circle-check.
 
-## 4.7 API của HMI (`include/hmi.h`)
+## 4.8 API của HMI (`include/hmi.h`)
 
 Gọi được từ **bất kỳ task nào** (có khoá, chi phí thấp):
 
@@ -204,7 +233,7 @@ Callback (chạy trong task `ui`, **chỉ được post**): `relayToggle`,
 `brightnessChanged`, `autoDimChanged`, `themeChanged`, `backlight`, `wifiScan`,
 `wifiJoin`, `firmwareUpdate`, `deviceToggle`.
 
-## 4.8 Thêm một màn hình mới
+## 4.9 Thêm một màn hình mới
 
 1. Thêm giá trị vào `enum Page` trong `src/hmi/hmi_ui.cpp`, trước `P_COUNT`. Nếu
    là trang con thì không thêm vào thanh điều hướng (`kNavCount`).
