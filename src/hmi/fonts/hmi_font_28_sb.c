@@ -1,7 +1,7 @@
 /*******************************************************************************
  * Size: 28 px
  * Bpp: 4
- * Opts: --bpp 4 --no-compress --format lvgl --size 28 --font C:/Users/admin/AppData/Local/Temp/tmp.pVyw8pgkFn/SemiBold.ttf -r 0x20,0x25,0x2D,0x2E,0x30-0x39,0x2013 --lv-font-name hmi_font_28_sb -o src/hmi/fonts/hmi_font_28_sb.c
+ * Opts: --bpp 4 --no-compress --format lvgl --size 28 --font C:/Users/admin/AppData/Local/Temp/tmp.6Zz0hyVG7b/SemiBold.ttf -r 0x20,0x25,0x2D,0x2E,0x30-0x39,0x2013 --lv-font-name hmi_font_28_sb -o src/hmi/fonts/hmi_font_28_sb.c
  ******************************************************************************/
 
 #ifdef LV_LVGL_H_INCLUDE_SIMPLE

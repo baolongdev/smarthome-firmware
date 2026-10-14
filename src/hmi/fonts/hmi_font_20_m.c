@@ -1,7 +1,7 @@
 /*******************************************************************************
  * Size: 20 px
  * Bpp: 4
- * Opts: --bpp 4 --no-compress --format lvgl --size 20 --font C:/Users/admin/AppData/Local/Temp/tmp.pVyw8pgkFn/Medium.ttf -r 0x20-0x7E,0xB0 --lv-font-name hmi_font_20_m -o src/hmi/fonts/hmi_font_20_m.c
+ * Opts: --bpp 4 --no-compress --format lvgl --size 20 --font C:/Users/admin/AppData/Local/Temp/tmp.6Zz0hyVG7b/Medium.ttf -r 0x20-0x7E,0xB0 --lv-font-name hmi_font_20_m -o src/hmi/fonts/hmi_font_20_m.c
  ******************************************************************************/
 
 #ifdef LV_LVGL_H_INCLUDE_SIMPLE

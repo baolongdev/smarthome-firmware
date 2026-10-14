@@ -24,6 +24,8 @@ enum Dirty : uint32_t {
     D_UPDATE = 1u << 12,
     D_ROOM = 1u << 13,
     D_DEVICES = 1u << 14,
+    D_FILES = 1u << 15,
+    D_FILEVIEW = 1u << 16,
     D_ALL = 0xFFFFFFFFu,
 };
 
@@ -56,10 +58,17 @@ struct Model {
     bool deviceOnline[kMaxDevices] = {};
     bool deviceKnown[kMaxDevices] = {};  // false until the first poll answers or fails
     SystemInfo sys;
+    FileList files;
+    FileView view;
     uint32_t dirty = D_ALL;
 };
 
 Model& model();  // hold ModelLock while touching it
+Model& newModel();  // zero-state Model allocated in PSRAM
+// Text of the file shown in the viewer (FileView::textLen bytes), PSRAM.
+// Read it under ModelLock: setFileView() rewrites it.
+const char* fileText();
+const uint16_t* fileImage();  // FileView::imgW x imgH native RGB565, same rules
 
 void modelLock();
 void modelUnlock();

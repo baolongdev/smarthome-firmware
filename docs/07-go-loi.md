@@ -8,14 +8,24 @@
 | `toggle 1` .. `toggle 3` | bật/tắt relay trên panel |
 | `page 0` .. `page 3` | chuyển trang: Tổng quan / Điều khiển / Cài đặt / Wi-Fi |
 | `scroll <px>` | cuộn trang hiện tại bằng API (dương = xuống), **không** đi qua đường cảm ứng |
+| `drag x y y 40` | chạm (tap) tại (x, y), đi qua đường cảm ứng thật |
 | `drag x y0 y1 [ms]` | giả lập một lần vuốt dọc qua **đúng đường xử lý cảm ứng** của LVGL (hit-test, kéo, quán tính), ví dụ `drag 240 380 120 300` |
 | `wifi` | mở trang Wi-Fi và quét |
+| `detail 0` .. `detail 6` | mở thẳng trang chi tiết: Mạng, MQTT, Bộ nhớ, Thời gian chạy, Thẻ nhớ, config.json, Giới thiệu |
+| `kbd` | mở màn nhập mật khẩu cho một mạng giả (để kiểm tra bàn phím) |
 | `devices` | trạng thái các thiết bị Tasmota |
 | `theme 0` .. `theme 3` | đổi bộ màu Lime / Ember / Cobalt / Bách Khoa (không lưu) |
 | `sensor ok\|warn\|error\|loading\|stale` | xem trước các trạng thái của gauge (tắt giả lập) |
 | `sensor sim` | bật lại giả lập cảm biến |
 | `shot` | gửi ảnh màn hình qua serial (dùng với `tools/screenshot.py`) |
 | `shot sd` | lưu ảnh BMP vào thẻ nhớ |
+| `shot fb [ms]` | chụp **framebuffer thật** sau `ms` mili giây (thấy được xé hình, rác hình lúc chuyển cảnh). Ví dụ `python tools/screenshot.py COM4 fb.png "kbd;shot fb 60"` |
+| `sd tree` | in toàn bộ cây thư mục trên thẻ kèm dung lượng tệp |
+| `sd restore` | cài lại firmware trong `/backup/firmware-prev.bin` |
+| `view <đường dẫn>` | mở tệp trên thẻ trong trình xem (bảng CSV, ảnh, văn bản) |
+| `history save` | lưu lịch sử cảm biến ra thẻ và flash ngay |
+| `sd wipe` | **xóa sạch thẻ** (mọi tệp và thư mục), rồi tạo lại `/logs/sensors`; thư viện SD không format được FAT nên đây là cách thay thế |
+| `bench [psram\|hybrid]` | dựng lại UI và đo thời gian vẽ lại toàn màn hình (vẽ + flush) |
 
 Lệnh không hợp lệ in ra `? <lệnh>`.
 
@@ -25,6 +35,8 @@ Lệnh không hợp lệ in ra `? <lệnh>`.
 pip install pyserial pillow
 python tools/screenshot.py COM18 shot.png      # đóng serial monitor trước
 ```
+
+Ảnh bị thiếu điểm (log chen vào giữa một dòng dữ liệu) thì tool tự thử lại tối đa 3 lần.
 
 - **Giao thức:** firmware trả `SHOT 480 480`, rồi các dòng `#<base64>` chứa
   các bản ghi RLE (u16 số điểm ảnh liên tiếp, u16 màu RGB565 đã đảo byte), rồi
@@ -80,7 +92,7 @@ lại được sau khi board đã tự khởi động lại.
 | Board tự khởi động lại, mã reset 6 | task `ui`/`app` bị chặn quá 10 giây (watchdog) |
 | Ảnh chụp từ `screenshot.py` bị sọc/hỏng | dùng `screenshot.py` bản mới (định dạng base64 theo dòng) |
 | Cảm ứng chập chờn | có code gọi `Wire.begin(19, 45)` song song với LovyanGFX |
-| Chữ tiếng Việt thành ô trống | ký tự nằm ngoài dải font. Sinh lại font bằng `tools/gen_lvgl_fonts.sh` |
+| Chữ hiện thành ô vuông | ký tự không có trong font. Chạy `python tools/check_font_coverage.py` để biết ký tự nào, ở dòng nào. Thêm vào `TEXT` trong `tools/gen_lvgl_fonts.sh` rồi sinh lại font; nếu TTF không có ký tự đó (ví dụ mũi tên) thì đổi chuỗi |
 | Phím bàn phím hiện ô vuông | phím phải dùng `lv_font_montserrat_16` (có ký hiệu LV_SYMBOL) |
 | Lỗi biên dịch `namespace hmi::port`, khởi tạo aggregate | thiếu `-std=gnu++17` / `build_unflags = -std=gnu++11` |
 | Lỗi biên dịch `abstract type DataWrapperT<SPIFFSFS>` | (UI LovyanGFX cũ) `#include <SPIFFS.h>` phải đứng trước LovyanGFX |

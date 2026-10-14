@@ -11,8 +11,14 @@
 //   /config.json                 Wi-Fi list, MQTT broker, room, Tasmota devices (read at boot)
 //   /firmware.bin                offered in Settings, flashed on confirm
 //   /logs/events.log             boot, relay, network events (rotates at 256 KB)
-//   /logs/sensors/YYYY-MM-DD.csv one row per minute
+//   /logs/sensors/YYYY-MM-DD.csv one row per minute, kept "logDays" days (default 90)
+//   /data/history.bin            sensor history rings (datalog), saved every 10 min
+//   /backup/firmware-prev.bin    running image saved before each SD update ("sd restore")
 //   /screenshots/shot_NNN.bmp    serial command "shot sd"
+//
+// Flash (LittleFS on the 3.4 MB "spiffs" partition, mounted at /lfs):
+//   /config.json                 copy of the last valid SD config (used without a card)
+//   /history.bin                 sensor history, saved every hour
 
 #include <Arduino.h>
 
@@ -47,5 +53,13 @@ void logEvent(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 void logSensors(float primary, float metric1, float metric2);
 void requestFirmwareUpdate();  // flash /firmware.bin, restart on success
 void requestScreenshot();      // BMP of the current screen to /screenshots
+// File browser: results go to hmi::setFileList / hmi::setFileView.
+void requestList(const char* dir);
+void requestRead(const char* path);    // text files: whole file or its last 64 KB
+void requestDelete(const char* path);  // files and empty folders; re-lists the parent
+void requestTree();  // print every folder and file to Serial (console "sd tree")
+void requestWipe();  // delete everything on the card, keep /logs (console "sd wipe")
+void requestRestore();      // reinstall /backup/firmware-prev.bin (console "sd restore")
+void requestHistorySave();  // save history to SD and flash now (console "history save")
 
 }  // namespace storage

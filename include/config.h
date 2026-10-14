@@ -39,6 +39,9 @@
 #define HMI_ROOM_NAME "Phòng khách"            // header title (UTF-8)
 #define HMI_DIM_AFTER_MS 30000                 // auto-dim idle time (toggle in Settings)
 #define HMI_DIM_BRIGHTNESS_PCT 15
+// LEDC duty (of 255) for the lowest slider position (10 %).  Below ~40 the
+// panel looks off; the slider range 10..100 % maps linearly onto this..255.
+#define HMI_BACKLIGHT_MIN_DUTY 40
 #define HMI_TZ_OFFSET_SECONDS (7 * 3600)
 
 // Primary gauge + two metric cards.  Labels/units/scale are data: change them

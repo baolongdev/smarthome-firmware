@@ -53,6 +53,13 @@ LV_IMAGE_DECLARE(bk_logo_132);
 #define ICON_DRIVE ""
 #define ICON_FILE ""
 #define ICON_CHECK ""
+#define ICON_FOLDER ""
+#define ICON_FILE_PLAIN ""
+#define ICON_FILE_IMAGE ""
+#define ICON_FILE_CODE ""
+#define ICON_FILE_SHEET ""
+#define ICON_TRASH ""
+#define ICON_FOLDER_TREE ""
 
 namespace hmi::theme {
 
@@ -100,6 +107,19 @@ constexpr int32_t kMargin = 16;
 constexpr int32_t kContentY = 64;   // pages live in y 64..392
 constexpr int32_t kContentH = 328;
 constexpr int32_t kNavY = 408;
+// The status header is shown on Tổng quan only.  Điều khiển and Cài đặt use
+// y kTabY..392 above the nav bar; Settings sub-pages (Wi-Fi, detail, files,
+// file view) hide the nav bar too and take the whole screen, laid out so the
+// first and last visible pixels sit kMargin from every border.
+constexpr int32_t kTabY = 4;  // + section title pad 8 + font headroom = caps at y 16
+constexpr int32_t kTabH = kNavY - kMargin - kTabY;
+constexpr int32_t kSubY = 0;
+constexpr int32_t kSubH = 480;
+constexpr int32_t kBarH = 64;  // sub-page back bar, centred on y 32; content from 64
+// Sub-pages use one inset for everything: back arrow, action button, content
+// left/right and bottom all sit kSubPad from the border.
+constexpr int32_t kSubPad = 24;
+constexpr int32_t kSubW = 480 - 2 * kSubPad;
 
 // Shared styles (initialised by init()).
 extern lv_style_t card;      // surface, r16, pad 16, no border

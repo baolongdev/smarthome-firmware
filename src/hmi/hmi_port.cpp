@@ -9,7 +9,10 @@
 namespace hmi::port {
 namespace {
 
-constexpr int kBufLines = 48;  // 480x48 RGB565 = 45 KB per buffer, internal DMA RAM
+// One 480x64 RGB565 render buffer (60 KB, internal RAM).  The flush is a
+// synchronous CPU copy, so a second buffer never overlapped anything; one
+// taller buffer halves the render passes per frame for the same RAM.
+constexpr int kBufLines = 64;
 
 LGFX* s_lcd = nullptr;
 void (*s_onWake)() = nullptr;
@@ -25,11 +28,23 @@ struct SynthDrag {
 
 uint32_t tickCb() { return millis(); }
 
+uint32_t s_flushUs = 0;
+uint32_t s_flushCount = 0;
+
 void flushCb(lv_display_t* disp, const lv_area_t* area, uint8_t* px) {
+    const uint32_t t0 = micros();
     const int32_t w = lv_area_get_width(area);
     const int32_t h = lv_area_get_height(area);
-    // LVGL RGB565 is native-endian, which is lgfx::rgb565_t.
-    s_lcd->pushImage(area->x1, area->y1, w, h, reinterpret_cast<const lgfx::rgb565_t*>(px));
+    // The RGB panel framebuffer holds byte-swapped RGB565 (lgfx::swap565_t).
+    // Pushing LVGL's native-endian pixels made LovyanGFX convert them one by
+    // one (~42 ms per full frame); swapping the chunk in place first lets it
+    // memcpy each row into the framebuffer instead (~25 ms per full frame,
+    // bound by PSRAM bandwidth shared with the LCD DMA: writing the rows
+    // directly into the framebuffer measured the same).
+    lv_draw_sw_rgb565_swap(px, w * h);
+    s_lcd->pushImage(area->x1, area->y1, w, h, reinterpret_cast<const lgfx::swap565_t*>(px));
+    s_flushUs += micros() - t0;
+    s_flushCount++;
     lv_display_flush_ready(disp);
 }
 
@@ -100,16 +115,14 @@ void begin(LGFX& lcd) {
 
     lv_display_t* disp = lv_display_create(DISPLAY_WIDTH, DISPLAY_HEIGHT);
     const size_t bytes = DISPLAY_WIDTH * kBufLines * sizeof(uint16_t);
-    void* buf1 = heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
-    void* buf2 = heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
-    if (!buf1 || !buf2) {
+    void* buf = heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!buf) {
         // Fall back to PSRAM: slower, but the panel still works.
-        Serial.println("HMI: internal draw buffers unavailable, using PSRAM");
-        buf1 = buf1 ? buf1 : heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM);
-        buf2 = buf2 ? buf2 : heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM);
+        Serial.println("HMI: internal draw buffer unavailable, using PSRAM");
+        buf = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM);
     }
     lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565);
-    lv_display_set_buffers(disp, buf1, buf2, bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
+    lv_display_set_buffers(disp, buf, nullptr, bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
     lv_display_set_flush_cb(disp, flushCb);
 
     lv_indev_t* touch = lv_indev_create();
@@ -140,6 +153,16 @@ void injectDrag(int16_t x, int16_t y0, int16_t y1, uint16_t ms) {
 void armWakeGuard(void (*onWake)()) {
     s_onWake = onWake;
     s_guard = true;
+}
+
+void copyFramebuffer(uint8_t* dst) {
+    s_lcd->readRect(0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT, reinterpret_cast<lgfx::swap565_t*>(dst));
+}
+
+void takeFlushStats(uint32_t* us, uint32_t* count) {
+    *us = s_flushUs;
+    *count = s_flushCount;
+    s_flushUs = s_flushCount = 0;
 }
 
 }  // namespace hmi::port

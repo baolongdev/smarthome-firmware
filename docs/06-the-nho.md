@@ -21,7 +21,10 @@
 /logs/events.log                nhật ký sự kiện
 /logs/events.1.log              bản cũ (xoay vòng khi > 256 KB)
 /logs/sensors/YYYY-MM-DD.csv    số liệu cảm biến theo ngày
-/logs/sensors/undated.csv       khi chưa đồng bộ giờ NTP
+/logs/sensors/undated.csv       khi chưa đồng bộ giờ NTP (giữ "logDays" ngày, mặc định 90)
+/data/history.bin               lịch sử cảm biến (vòng đệm PSRAM), lưu 10 phút/lần
+/backup/firmware-prev.bin       firmware đang chạy, chép ra trước mỗi lần cập nhật từ thẻ
+/backup/firmware-prev.txt       phiên bản của bản sao đó
 /screenshots/shot_001.bmp ...   ảnh chụp màn hình (lệnh "shot sd")
 ```
 
@@ -56,6 +59,9 @@ Mọi trường đều **không bắt buộc**. Trường nào có sẽ ghi đè
 - **JSON sai cú pháp:** bỏ qua toàn bộ file, ghi log `config.json invalid: <lỗi>`.
 - **Bảo mật:** mật khẩu trong `config.json` là văn bản thường, ai có thẻ đều
   đọc được. Mạng chọn trên panel được lưu trong **NVS**, không ghi ra thẻ.
+
+Trường thêm: `"logDays": 90`, số ngày giữ tệp CSV cảm biến (1..3650). Task
+`storage` xoá tệp cũ hơn mỗi 6 giờ, khi đã có giờ NTP.
 
 ## 6.4 Nhật ký sự kiện (`/logs/events.log`)
 
@@ -129,9 +135,63 @@ time,primary,metric1,metric2
 - **Bài học:** bản trước gọi hàm này mỗi 5 giây ngay trong vòng lặp vẽ UI, nên
   UI bị khựng định kỳ và trông như treo khi cuộn (xem 08-nhat-ky.md).
 
-## 6.8 Chụp màn hình vào thẻ
+## 6.8 Duyệt và xoá tệp trên panel
+
+Cài đặt → Thẻ nhớ → **Tệp trên thẻ**: duyệt thư mục, xem kích thước, đọc nội
+dung tệp văn bản (log, csv, json…; tệp lớn hiện 1,5 KB cuối) và xoá tệp (chạm 2
+lần). Mỗi lần xoá đều ghi vào `events.log`
+(`File deleted from panel: <đường dẫn>`). Chi tiết giao diện: 04-giao-dien-hmi.md.
+
+## 6.9 Chụp màn hình vào thẻ
 
 Lệnh serial `shot sd`:
 - lưu `/screenshots/shot_NNN.bmp` (480×480, 24-bit, khoảng 690 KB);
 - task `ui` chỉ lấy snapshot; task `storage` mã hoá BMP và ghi file;
 - log in `Saved /screenshots/shot_003.bmp`.
+
+## 6.9b Xem trước tệp
+
+Chạm một tệp trong trình duyệt tệp (Cài đặt → Thẻ nhớ → Tệp trên thẻ):
+
+| Loại | Hiển thị |
+|---|---|
+| `.csv` | **bảng** (`lv_table`): dòng tiêu đề, tối đa 200 dòng mới nhất (dòng mới ở trên), cột số căn phải, bảng rộng thì cuộn ngang |
+| `.jpg` `.jpeg` `.png` `.bmp` | **ảnh**: task `storage` giải mã bằng LovyanGFX vào sprite trong PSRAM, thu nhỏ vừa 432 × 432 (giữ tỉ lệ, không phóng to), rồi đưa sang LVGL dạng RGB565 |
+| `.txt` `.log` `.json` `.md` … | văn bản, tối đa 64 KB (tệp dài: 64 KB cuối) |
+
+- Ảnh chụp màn hình BMP 480×480 giải mã trong khoảng 670 ms.
+- JPEG lớn (ảnh điện thoại vài MB) có thể mất vài giây.
+- CSV dài: storage đọc 64 KB cuối rồi chép dòng tiêu đề lên đầu, để bảng
+  vẫn có tên cột.
+- Lệnh serial `view <đường dẫn>` mở tệp trực tiếp, dùng khi kiểm tra.
+
+## 6.10 Tận dụng PSRAM và flash
+
+| Nơi | Dùng cho | Dung lượng |
+|---|---|---|
+| PSRAM | framebuffer màn hình | 450 KB |
+| PSRAM | lịch sử cảm biến: 8640 ô × 10 s (24 giờ) + 10080 ô × 1 phút (7 ngày), mỗi ô 3 số `float` (`src/datalog.cpp`) | 219 KB |
+| PSRAM | nhật ký sự kiện: 400 dòng gần nhất (nạp sẵn 24 KB cuối của `events.log` khi khởi động) | 44 KB |
+| PSRAM | trình xem tệp: đọc tới 64 KB (trước là 1,5 KB), chia nhãn ~1 KB để LVGL không phải dàn trang cả khối | 2 × 64 KB |
+| PSRAM | widget LVGL, model UI | khoảng 65 KB |
+| Flash | LittleFS trên phân vùng `spiffs` 3,4 MB (mount ở `/lfs`, tự format lần đầu) | |
+| Flash | `/config.json`: bản sao của `config.json` hợp lệ gần nhất trên thẻ (chỉ ghi khi nội dung đổi); dùng khi không có thẻ | vài KB |
+| Flash | `/history.bin`: lịch sử cảm biến, mỗi giờ | 219 KB |
+
+- **Lịch sử cảm biến** (Cài đặt → DỮ LIỆU → Lịch sử cảm biến, hoặc chạm vào
+  đồng hồ / thẻ chỉ số ở Tổng quan): ba biểu đồ nhiệt độ, độ ẩm, công suất cho
+  khung 1 giờ / 24 giờ / 7 ngày.
+  - Mỗi ô là trung bình các mẫu trong 10 giây (hoặc 1 phút); ô không có mẫu là
+    khoảng trống.
+  - Khi khởi động, nạp bản mới hơn giữa thẻ và flash (so số thứ tự `seq`).
+    Nếu cả lúc lưu lẫn lúc khởi động đều đã có giờ NTP thì thời gian tắt máy
+    được điền thành khoảng trống.
+- **Ghi flash ngắn và thưa:** mỗi lần ghi flash, cache bị tắt, có thể làm màn
+  hình RGB chớp. Vì vậy lịch sử chỉ ghi ra flash mỗi giờ, theo từng khối 4 KB
+  cách nhau 20 ms (đo: 4,5 giây cho 225 KB); ghi ra thẻ thì liền một lần
+  (đo: 209 ms).
+- **Sao lưu firmware:** trước khi cài `/firmware.bin`, firmware đang chạy được
+  chép ra `/backup/firmware-prev.bin`. Lệnh serial `sd restore` cài lại bản đó
+  (bản đang chạy lại trở thành bản sao lưu).
+- **Lệnh serial:** `history save` (lưu lịch sử ra thẻ và flash ngay),
+  `sd restore`, `sd tree`, `sd wipe`.

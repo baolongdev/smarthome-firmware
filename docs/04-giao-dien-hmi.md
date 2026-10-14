@@ -4,9 +4,23 @@
 
 - **Thư viện:** LVGL 9.2.2, chạy trong task `ui`. LovyanGFX chỉ còn làm driver
   LCD và cảm ứng bên dưới (`src/hmi/hmi_port.cpp`).
-- **Render từng phần:** 2 buffer 480×48 RGB565 (45 KB mỗi buffer) trong SRAM
-  nội, DMA-capable. Flush bằng `pushImage` vào framebuffer RGB trong PSRAM.
-  Nếu không cấp phát được SRAM nội thì lùi về PSRAM (chậm hơn).
+- **Render từng phần:** 1 buffer 480×64 RGB565 (60 KB) trong SRAM nội. Flush
+  là phép chép đồng bộ nên buffer thứ hai không giúp gì; một buffer cao hơn
+  thì số lượt vẽ mỗi khung giảm một nửa. Flush đảo byte cả khối
+  (`lv_draw_sw_rgb565_swap`) rồi `pushImage` dạng `swap565_t`, để LovyanGFX
+  `memcpy` từng hàng vào framebuffer trong PSRAM. Nếu không cấp phát được SRAM
+  nội thì lùi về PSRAM (chậm hơn).
+- **Vẽ trên 2 nhân:** `LV_USE_OS = LV_OS_FREERTOS`, `LV_DRAW_SW_DRAW_UNIT_CNT = 2`
+  (mỗi luồng vẽ 8 KB stack). Chỉ task `ui` gọi LVGL; hai luồng vẽ là nội bộ của LVGL.
+- **Không dùng fade cho vùng lớn** (chuyển trang, bảng nhập mật khẩu Wi-Fi,
+  màn hình khởi động). LVGL 9.2 coi đối tượng có nền đặc là che kín vùng đó
+  ngay cả khi `opa` đang chạy hiệu ứng, nên không vẽ lại phần bên dưới mà trộn
+  lên nội dung cũ trong bộ đệm vẽ (dải vừa vẽ trước). Trên màn hình thật, kết
+  quả là bàn phím lặp lại mỗi 64 px.
+- **Biên dịch `-O2`** thay cho `-Os` (`platformio.ini`).
+- **Bộ nhớ LVGL ở PSRAM:** `LV_USE_STDLIB_MALLOC = LV_STDLIB_CUSTOM`, cấp phát
+  trong `src/hmi/lv_mem_psram.c` (PSRAM trước, hết thì lùi về SRAM nội). Model
+  và bản chụp `s_snap` (khoảng 5,5 KB mỗi cái) cũng nằm ở PSRAM (`newModel()`).
 - **Chỉ vẽ lại phần thay đổi:** model có cờ dirty theo nhóm (`D_PRIMARY`,
   `D_RELAYS`, `D_DEVICES`…). Mỗi vòng, task `ui` chỉ cập nhật widget của nhóm
   có cờ bật, và LVGL chỉ invalidate vùng của các widget đó.
@@ -55,8 +69,27 @@ y=408  ├───────────────────────�
 y=464  └────────────────────────────────────────────┘
 ```
 
-Lề 16 px, lưới 8 px, vùng chạm từ 44 px trở lên. Header và thanh điều hướng
-luôn hiển thị; các trang đổi bằng fade 200 ms.
+Lề 16 px, lưới 8 px, vùng chạm từ 44 px trở lên. Các trang đổi bằng fade 200 ms.
+Header và thanh điều hướng chỉ hiện ở nơi cần (`selectPage()`):
+
+| Trang | Header | Thanh điều hướng | Vùng nội dung |
+|---|---|---|---|
+| Tổng quan | có | có | y 64..392 (`kContentY`, `kContentH`) |
+| Điều khiển, Cài đặt | ẩn | có | y 4..392 (`kTabY`, `kTabH`) |
+| Trang con của Cài đặt: Wi-Fi, chi tiết, tệp, xem tệp | ẩn | ẩn, thoát bằng nút ← | toàn màn hình: thanh tiêu đề 64 px (`kBarH`), nội dung x 24..456, y 64..456 |
+
+- **Trang con dùng một lề duy nhất 24 px** (`kSubPad`): mũi tên ←, nút
+  bên phải, nội dung hai bên và mép dưới. Thẻ và ghi chú lấy độ rộng 100% của
+  cột chứa (448 px ở tab, 432 px ở trang con).
+- **Tab chính: lề nhìn thấy đều 16 px** ở cả bốn phía, đo trên ảnh chụp: tính tới pixel
+  đầu tiên được vẽ (logo, chữ hoa của tiêu đề mục, mép thẻ), không phải tới
+  mép hộp LVGL.
+- **Thanh tiêu đề trang con** (`barTitle()`, hằng `kBar*` trong `hmi_ui.cpp`):
+  - mũi tên ← và nút hành động bên phải (làm mới) cách mép 24 px, nằm trên
+    đường giữa y = 32;
+  - tiêu đề căn giữa màn hình, chữ dài bị cắt thành "…";
+  - trang Tệp ghi đường dẫn dạng "logs / 2026", ở thư mục gốc ghi "Tệp trên thẻ".
+- Đồng hồ trong header bị ẩn khi chưa đồng bộ giờ (thay vì hiện "--:--").
 
 **Dòng trạng thái kết nối** (màu vàng cam khi có lỗi):
 
@@ -95,16 +128,78 @@ luôn hiển thị; các trang đổi bằng fade 200 ms.
 
 ### Cài đặt (cuộn dọc)
 
+Ngoài trang Cài đặt chỉ giữ 8 hàng hay dùng; phần chi tiết nằm trong trang con.
+
 | Nhóm | Hàng | Hành vi |
 |---|---|---|
+| (đầu trang) | thẻ logo BK › | trang Giới thiệu |
 | KẾT NỐI | Wi-Fi: "SSID · RSSI dBm" / "Mất kết nối" › | mở trang Wi-Fi và quét |
+| | Mạng & MQTT: IP / "MQTT lỗi" / "Chờ Wi-Fi" › | trang Mạng & MQTT |
 | MÀN HÌNH | Độ sáng màn hình (slider 10–100%) | xem trước khi kéo, lưu NVS khi thả |
 | | Tự giảm sáng sau 30 giây (công tắc) | lưu NVS |
 | | Màu chủ đạo: Lime / Ember / Cobalt / Bách Khoa ● | chạm để đổi vòng, lưu NVS |
-| THẺ NHỚ | Thẻ nhớ: "Trống x / y GB" / "Không có thẻ" | |
-| | config.json: "Đã nạp" / "Không có tệp" | |
-| | Cập nhật firmware: "firmware.bin · x MB" | **chạm 2 lần** trong 4 giây để cài |
-| TRẠNG THÁI HỆ THỐNG | MQTT, Địa chỉ IP, Bộ nhớ trống, Thời gian chạy, Firmware | chỉ hiển thị |
+| DỮ LIỆU & HỆ THỐNG | Thẻ nhớ: "Trống x / y GB" / "Không có thẻ" › | trang Thẻ nhớ |
+| | Lịch sử cảm biến: "x giờ" › | biểu đồ 1 giờ / 24 giờ / 7 ngày |
+| | Hệ thống: "RAM x% · y giờ" › | trang Hệ thống |
+
+### Trang chi tiết (trang con của Cài đặt)
+
+Các hàng có dấu `›` mở một trang chi tiết dùng chung, gồm nút quay lại, tiêu
+đề và các thẻ chứa cặp tên–giá trị. Nội dung **tự cập nhật khi đang mở** (khi
+thông tin hệ thống, thẻ nhớ, kết nối hoặc giờ thay đổi).
+
+Trang chi tiết có thể mở trang chi tiết khác (`openSubDetail()`); nút ←
+khi đó quay về trang cha, ví dụ Thẻ nhớ → config.json → ← về Thẻ nhớ.
+
+| Hàng trong Cài đặt | Trang chi tiết |
+|---|---|
+| Thẻ nhớ | trạng thái, loại thẻ (SD/SDHC), tốc độ SPI, dung lượng đã dùng (thanh %); các hàng **Tệp trên thẻ ›**, **config.json ›** (nạp từ thẻ / flash), **Cập nhật firmware** (chạm 2 lần trong 4 giây); đường dẫn log, sao lưu firmware |
+| config.json (trong Thẻ nhớ) | nạp từ đâu, tên phòng, số mạng Wi-Fi, broker MQTT, số thiết bị Tasmota |
+| Mạng & MQTT | Wi-Fi: trạng thái, SSID, cường độ sóng (Tốt/Trung bình/Yếu), BSSID, kênh; địa chỉ: IP, gateway, subnet, DNS, MAC, hostname; rồi MQTT: trạng thái kèm mã `PubSubClient::state()` diễn giải tiếng Việt, broker, đăng nhập, client ID, keep-alive, chính sách thử lại, các topic |
+| Hệ thống | bộ nhớ kiểu "instrument", **stream 4 lần/giây**: RAM nội (màu chủ đạo) và PSRAM (tím) đặt cạnh nhau, mỗi loại có tiêu đề màu (kiêm chú thích), đã dùng/tổng và **% cỡ 64 px** (vàng cam khi > 90%); bên dưới là **một biểu đồ 15 giây chung cho cả hai đường**, có trục giá trị 100/75/50/25/0 khớp lưới, mốc "15 GIÂY TRƯỚC → BÂY GIỜ" và chấm điểm mới nhất cho từng đường; Flash: % firmware so với khe OTA trên thanh 24 đoạn |
+| Hệ thống (tiếp) | phân bổ PSRAM, LittleFS; thời gian: đã chạy, giờ hệ thống (sau NTP), múi giờ, lý do khởi động lần này; hàng **Nhật ký sự kiện ›** |
+| thẻ Giới thiệu | logo BK, sản phẩm, firmware, ngày build, phần cứng, màn hình, chip, CPU, MAC, ESP-IDF, LVGL |
+
+- **Màu giá trị:** xanh lá = tốt; vàng cam = cần chú ý (mất kết nối, sóng
+  yếu, heap thấp, chưa có NTP, reset do watchdog/brownout); thanh % chuyển
+  vàng cam khi dùng quá 85%.
+- **Trang Bộ nhớ chạy trực tiếp:** `liveMemory()` trong task `ui` đọc
+  `heap_caps_*` **mỗi 250 ms**, sửa chữ/thanh **tại chỗ** (thanh trượt 300 ms)
+  và đẩy một điểm vào `lv_chart` (60 điểm = 15 giây, chế độ SHIFT); không dựng
+  lại trang. Lúc chụp màn hình, đường PSRAM nhô lên khoảng 5%: đó là bộ đệm
+  snapshot ~450 KB. Lần cập nhật 5 giây của `SystemInfo` cũng không dựng
+  lại trang này.
+- **Nguồn dữ liệu:**
+  - `SystemInfo` do task `net` gửi mỗi 5 giây;
+  - `StorageInfo` do task `storage` gửi khi mount, khi cắm/rút thẻ và mỗi 10 phút.
+
+### Tệp trên thẻ (trang con của Cài đặt)
+
+Mở từ Cài đặt → THẺ NHỚ → **Tệp trên thẻ ›**.
+
+- **Danh sách:** thư mục đứng trước, sắp theo tên; icon theo loại tệp (thư mục,
+  văn bản/log, csv, json/bin, ảnh); kích thước tệp; tối đa 32 mục mỗi thư mục.
+- **Thanh trên:** nút ← lên thư mục cha (ở thư mục gốc thì về Cài đặt), tên thư
+  mục và đường dẫn, nút tải lại.
+- **Chạm một tệp** mở trang xem tệp:
+  - đường dẫn và kích thước;
+  - **nội dung** của tệp văn bản (`.txt .log .csv .json .cfg .ini .md .yaml`):
+    cả tệp nếu ≤ 1,5 KB, còn tệp lớn thì **1,5 KB cuối** (chỗ có log mới nhất),
+    bắt đầu từ đầu một dòng;
+  - nút **Xoá tệp**: chạm lần đầu hiện "Chạm lần nữa để xoá" (4 giây), chạm lần
+    hai mới xoá. Thư mục chỉ xoá được khi trống. Sau khi xoá, quay về danh sách
+    đã làm mới.
+- **Mọi thao tác với thẻ chạy trong task `storage`**, UI chỉ gửi yêu cầu:
+  - callback `fileList` / `fileRead` / `fileDelete` → `storage::requestList` /
+    `requestRead` / `requestDelete`;
+  - kết quả gửi về bằng `hmi::setFileList` / `setFileView`;
+  - không có thẻ thì trả lời ngay là "Không có thẻ nhớ", không treo ở trạng thái
+    đang tải.
+
+**Giữ vị trí cuộn khi làm mới:** trang chi tiết, danh sách Wi-Fi và danh sách
+tệp được vẽ lại mỗi khi dữ liệu đổi. Vị trí cuộn được lưu trước khi xoá và khôi
+phục sau khi dựng lại (`lv_obj_update_layout` rồi `lv_obj_scroll_to_y`), nên
+không còn nhảy lên đầu. Chỉ khi **mở** một trang hoặc thư mục khác thì mới về đầu.
 
 ### Wi-Fi (trang con của Cài đặt)
 - Nút quay lại, tiêu đề, nút quét lại (thành spinner khi đang quét).
@@ -114,7 +209,16 @@ luôn hiển thị; các trang đổi bằng fade 200 ms.
   - Icon khoá nếu mạng có mật khẩu; nhãn "Đã kết nối" cho mạng hiện tại.
 - **Chạm một mạng sẽ mở màn nhập mật khẩu** (toàn màn hình):
   - ô mật khẩu ẩn ký tự bằng `•`, nút mắt để hiện/ẩn;
-  - bàn phím LVGL dùng font Montserrat 16, vì font này có ký hiệu ⌫ ↵;
+  - **bàn phím** (`buildKeyboard()`) kín phần dưới màn hình (y 188–480), gồm
+    5 hàng phím cao khoảng 48 px:
+    - **chữ thường / chữ hoa:** hàng số `1–0`, ba hàng chữ kiểu điện thoại, rồi
+      hàng `1#` `-` `cách` `.` `✓`;
+    - **ký hiệu (`1#`):** `! @ # $ % ^ & * ( ) - _ = + [ ] { } ; : ' " / \ ? < > ,`;
+    - phím chữ màu `#262626`, phím chức năng `#161616`, phím đang nhấn `#4A4A4A`;
+      **phím ✓ dùng màu chủ đạo**;
+    - nhấn phím chữ thì hiện bong bóng phóng to (popover); giữ phím ⌫ để xoá liên tục;
+    - font Be Vietnam Pro, tự lùi về Montserrat 16 cho ký hiệu ⌫ ✓ (`lv_font_t::fallback`);
+    - mỗi lần mở lại màn hình thì về chế độ chữ thường;
   - nút **Kết nối** hoặc phím OK để gửi, phím ẩn bàn phím để đóng;
   - mạng mở thì không hiện bàn phím, ghi "Mạng mở, không cần mật khẩu";
   - mật khẩu dưới 8 ký tự bị chặn ngay trên màn hình.
@@ -128,6 +232,15 @@ luôn hiển thị; các trang đổi bằng fade 200 ms.
 | Không thấy mạng (NO_AP_FOUND) | "Không tìm thấy mạng" |
 | Router không phản hồi (AUTH_EXPIRE, ASSOC_EXPIRE, BEACON_TIMEOUT) | "Sóng yếu, router không phản hồi" |
 | Khác / quá 15 giây | "Không kết nối được" |
+
+**Căn giữa chữ theo chiều dọc với Be Vietnam Pro.** Font chừa khoảng trống
+phía trên chữ hoa cho dấu tiếng Việt chồng tầng, nên chữ không dấu (`q`, `1`,
+`ABC`) canh giữa theo hình học sẽ trông **thấp khoảng 2 px**. Cách bù:
+- **phím bàn phím:** `kbDrawTask()` đặt `ofs_y = -2` cho nhãn, trừ ký hiệu
+  Montserrat;
+- **ô mật khẩu:** lề 11/15 thay vì 13/13. Vùng nội dung phải đúng bằng một dòng
+  (52 − 2 viền − 26 lề = 24 px); nếu nhỏ hơn, ô một dòng sẽ tự cuộn và **đẩy
+  chữ ra khỏi tầm nhìn**.
 
 ### Màn cập nhật firmware
 Phủ toàn màn hình, gồm icon tải xuống, thanh tiến trình và dòng "x% · không
@@ -192,7 +305,15 @@ Mỗi bộ có màu chữ ký riêng, dùng cho vòng cung, công tắc bật, s
 | `lv_font_montserrat_16` | có sẵn trong LVGL | **chỉ cho phím bàn phím** (ký hiệu ⌫ ↵ ←) |
 
 - **Ký tự trong font chữ:** ASCII, toàn bộ chữ cái tiếng Việt có dấu,
-  `° · – • …`; 4 bpp, không nén.
+  `° · – • … × ± ≤ ≥`; 4 bpp, không nén.
+- **Be Vietnam Pro không có mũi tên** (`← → ›`…): đừng dùng trong chuỗi giao
+  diện (viết "5–60 giây"). Mũi tên dạng icon thì lấy từ Lucide (`ICON_CHEVRON`,
+  `ICON_BACK`).
+- **Kiểm tra sau khi thêm chữ:** `python tools/check_font_coverage.py`.
+  - Tool quét mọi chuỗi trong `src/` và `config.h`, đối chiếu với glyph **thật
+    sự có** trong các font đã biên dịch.
+  - Báo ký tự nào sẽ hiện thành **ô vuông** trên màn hình.
+  - Cũng báo các ký tự nằm trong dải `TEXT` mà file TTF không có.
 - **Chữ số đều rộng:** Be Vietnam Pro không có tính năng `tnum`, nên
   `tools/tabular_digits.py` nới mọi chữ số bằng chữ số rộng nhất và căn giữa,
   để số thay đổi không làm bố cục xê dịch.

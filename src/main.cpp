@@ -26,6 +26,7 @@
 #include "config.h"
 #include "hmi.h"
 #include "lgfx_4848s040_reference.h"
+#include "datalog.h"
 #include "storage.h"
 #include "tasmota.h"
 #include "wifi_manager.h"
@@ -104,6 +105,7 @@ void pushSensors(const SensorValues& s, hmi::SensorState state) {
         lastLog = millis();
         storage::logSensors(s.primary, s.metric1, s.metric2);
     }
+    if (state == hmi::SensorState::Ok && !s.primaryError) datalog::addSample(s.primary, s.metric1, s.metric2);
 }
 
 void appTask(void*) {
@@ -114,6 +116,7 @@ void appTask(void*) {
 
     for (;;) {
         AppMsg m;
+        datalog::tick();  // close finished history slots (10 s / 1 min)
         if (xQueueReceive(g_appQ, &m, pdMS_TO_TICKS(100)) == pdTRUE) {
             switch (m.cmd) {
                 case AppCmd::RelayToggle:
@@ -280,12 +283,41 @@ void feedHmiStatus(uint32_t now) {
         strlcpy(info.ssid, WiFi.SSID().c_str(), sizeof(info.ssid));
         strlcpy(info.ip, WiFi.localIP().toString().c_str(), sizeof(info.ip));
         info.rssi = WiFi.RSSI();
+        strlcpy(info.bssid, WiFi.BSSIDstr().c_str(), sizeof(info.bssid));
+        info.channel = WiFi.channel();
+        strlcpy(info.gateway, WiFi.gatewayIP().toString().c_str(), sizeof(info.gateway));
+        strlcpy(info.subnet, WiFi.subnetMask().toString().c_str(), sizeof(info.subnet));
+        strlcpy(info.dns, WiFi.dnsIP().toString().c_str(), sizeof(info.dns));
     }
+    strlcpy(info.mac, WiFi.macAddress().c_str(), sizeof(info.mac));
+    strlcpy(info.hostname, WIFI_HOSTNAME, sizeof(info.hostname));
+    strlcpy(info.mqttHost, g_mqttHost, sizeof(info.mqttHost));
+    info.mqttPort = g_mqttPort;
+    info.mqttState = g_mqtt.state();
+    info.mqttAuth = g_mqttUser[0] != 0;
+
     const uint32_t heap = ESP.getFreeHeap();
     if (heap < g_minFreeHeap) g_minFreeHeap = heap;
     info.heapKB = heap / 1024;
+    info.heapMinKB = ESP.getMinFreeHeap() / 1024;
+    info.heapTotalKB = ESP.getHeapSize() / 1024;
+    info.heapLargestKB = ESP.getMaxAllocHeap() / 1024;
     info.psramKB = ESP.getFreePsram() / 1024;
+    info.psramTotalKB = ESP.getPsramSize() / 1024;
+    info.flashMB = ESP.getFlashChipSize() / (1024 * 1024);
+    static const uint32_t appKB = ESP.getSketchSize() / 1024;  // hashes the image: once
+    info.appKB = appKB;
+    info.appSlotKB = ESP.getFreeSketchSpace() / 1024;
+
     info.uptimeS = (now - g_bootTime) / 1000;
+    info.resetReason = static_cast<uint8_t>(esp_reset_reason());
+    info.timeSynced = getLocalTime(&t, 0);
+    if (info.timeSynced) strftime(info.date, sizeof(info.date), "%d/%m/%Y", &t);
+    strlcpy(info.chip, ESP.getChipModel(), sizeof(info.chip));
+    info.chipRev = ESP.getChipRevision();
+    info.cores = ESP.getChipCores();
+    info.cpuMHz = ESP.getCpuFreqMHz();
+    strlcpy(info.sdk, ESP.getSdkVersion(), sizeof(info.sdk));
     // RSSI and heap can vary every second. The Settings page only needs a
     // human-readable refresh every few seconds; avoid repeated layout work.
     if (!lastSystemInfo || now - lastSystemInfo >= 5000) {
@@ -350,7 +382,7 @@ void printTasks() {
 
 // "shot" (tools/screenshot.py), "shot sd", "info"/"tasks", "toggle <1..3>",
 // "page <0..3>", "scroll <px>", "drag x y0 y1 [ms]", "devices", "wifi" (open + scan), "theme <0..2>",
-// "sensor ok|warn|error|loading|stale|sim".
+// "sensor ok|warn|error|loading|stale|sim", "bench [psram|hybrid]" (UI build/redraw timing).
 void consoleTask(void*) {
     char line[48];
     uint8_t len = 0;
@@ -370,8 +402,21 @@ void consoleTask(void*) {
                 hmi::screenshot(Serial);
                 Serial.flush();
                 Serial.setDebugOutput(true);
+            } else if (strncmp(line, "shot fb", 7) == 0) {  // "shot fb [ms]": real framebuffer
+                Serial.setDebugOutput(false);
+                hmi::screenshotFramebuffer(Serial, line[7] ? atoi(line + 8) : 0);
+                Serial.flush();
+                Serial.setDebugOutput(true);
             } else if (strcmp(line, "shot sd") == 0) {
                 storage::requestScreenshot();
+            } else if (strcmp(line, "sd tree") == 0) {
+                storage::requestTree();
+            } else if (strcmp(line, "sd wipe") == 0) {
+                storage::requestWipe();
+            } else if (strcmp(line, "sd restore") == 0) {
+                storage::requestRestore();
+            } else if (strcmp(line, "history save") == 0) {
+                storage::requestHistorySave();
             } else if (strcmp(line, "info") == 0 || strcmp(line, "tasks") == 0) {
                 printTasks();
             } else if (strncmp(line, "toggle ", 7) == 0) {
@@ -384,6 +429,14 @@ void consoleTask(void*) {
                 int x = 240, y0 = 300, y1 = 120, ms = 300;  // "drag x y0 y1 [ms]"
                 sscanf(line + 5, "%d %d %d %d", &x, &y0, &y1, &ms);
                 hmi::injectDrag(x, y0, y1, ms);
+            } else if (strncmp(line, "detail ", 7) == 0) {
+                hmi::showDetail(atoi(line + 7));
+            } else if (strncmp(line, "bench", 5) == 0) {
+                hmi::benchmark(strstr(line, "psram") ? 1 : strstr(line, "hybrid") ? 2 : 0);
+            } else if (strncmp(line, "view ", 5) == 0) {
+                hmi::previewFile(line + 5);
+            } else if (strcmp(line, "kbd") == 0) {
+                hmi::previewKeyboard();
             } else if (strcmp(line, "devices") == 0) {
                 tasmota::print(Serial);
             } else if (strcmp(line, "wifi") == 0) {
@@ -409,7 +462,10 @@ void onRelayToggle(uint8_t i) { postApp(AppMsg{AppCmd::RelayToggle, i, false, {}
 void onBrightnessChanged(uint8_t pct) { postApp(AppMsg{AppCmd::SaveBrightness, pct, false, {}, {}}); }
 void onAutoDimChanged(bool on) { postApp(AppMsg{AppCmd::SaveAutoDim, 0, on, {}, {}}); }
 void onThemeChanged(uint8_t i) { postApp(AppMsg{AppCmd::SaveTheme, i, false, {}, {}}); }
-void onBacklight(uint8_t pct) { display.setBrightness(map(pct, 0, 100, 0, 255)); }
+void onBacklight(uint8_t pct) {
+    pct = constrain(pct, 10, 100);
+    display.setBrightness(map(pct, 10, 100, HMI_BACKLIGHT_MIN_DUTY, 255));
+}
 void onWifiScan() { postNet(NetMsg{NetCmd::Scan, {}, {}}); }
 void onWifiJoin(const char* ssid, const char* pass) {
     NetMsg m{NetCmd::Join, {}, {}};
@@ -419,6 +475,9 @@ void onWifiJoin(const char* ssid, const char* pass) {
 }
 void onFirmwareUpdate() { storage::requestFirmwareUpdate(); }
 void onDeviceToggle(uint8_t device, uint8_t channel) { tasmota::toggle(device, channel); }
+void onFileList(const char* path) { storage::requestList(path); }
+void onFileRead(const char* path) { storage::requestRead(path); }
+void onFileDelete(const char* path) { storage::requestDelete(path); }
 
 // Tasmota devices: /config.json "tasmota" if present, else config.h.
 uint8_t deviceList(hmi::DeviceInfo* out) {
@@ -459,11 +518,13 @@ void setup() {
     }
 
     if (!display.begin()) Serial.println("!!! display.begin() FAILED !!!");
-    // The known-good reference firmware drives GPIO38 high right after begin();
-    // brightness is then handled by Light_PWM via setBrightness().
-    pinMode(PIN_DISP_BL, OUTPUT);
-    digitalWrite(PIN_DISP_BL, HIGH);
+    // Backlight: Light_PWM attached GPIO38 to an LEDC channel in begin().  Do
+    // not pinMode()/digitalWrite() it afterwards: that detaches the pin from
+    // LEDC, leaves it stuck at 100 % and the brightness slider does nothing.
+    display.setBrightness(255);  // until the saved level arrives via the UI
 
+    // PSRAM history/event rings first: storage::begin() restores into them.
+    datalog::begin();
     // SD after the display: SCK/MOSI are shared with the ST7701 init bus.
     storage::begin();
     storage::logEvent("Boot fw=%s reset=%d", FIRMWARE_VERSION, (int)esp_reset_reason());
@@ -496,6 +557,9 @@ void setup() {
     cb.wifiJoin = onWifiJoin;
     cb.firmwareUpdate = onFirmwareUpdate;
     cb.deviceToggle = onDeviceToggle;
+    cb.fileList = onFileList;
+    cb.fileRead = onFileRead;
+    cb.fileDelete = onFileDelete;
     static hmi::DeviceInfo devices[hmi::kMaxDevices];
     const uint8_t deviceCount = deviceList(devices);
     hmi::configureDevices(devices, deviceCount);  // the Control page is built for these

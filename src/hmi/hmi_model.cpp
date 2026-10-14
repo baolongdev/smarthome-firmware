@@ -2,15 +2,26 @@
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include <esp_heap_caps.h>
 #include <string.h>
+
+#include <new>
 
 namespace hmi {
 
 namespace {
 // Created during static init (single-threaded), before any task can call a setter.
 SemaphoreHandle_t s_lock = xSemaphoreCreateRecursiveMutex();
-Model s_model;
+Model& s_model = newModel();
 }  // namespace
+
+// ~5.5 KB each (file list + file preview): kept in PSRAM, which is already
+// mapped when static constructors run (CONFIG_SPIRAM_BOOT_INIT).
+Model& newModel() {
+    void* p = heap_caps_malloc(sizeof(Model), MALLOC_CAP_SPIRAM);
+    if (!p) p = malloc(sizeof(Model));
+    return *new (p) Model();
+}
 
 Model& model() { return s_model; }
 void modelLock() { xSemaphoreTakeRecursive(s_lock, portMAX_DELAY); }
@@ -110,10 +121,7 @@ void setWifiJoin(WifiJoin state, const char* message) {
 
 void setStorage(const StorageInfo& info) {
     ModelLock lock;
-    StorageInfo& o = model().storage;
-    if (o.present == info.present && o.totalMB == info.totalMB && o.usedMB == info.usedMB &&
-        o.configLoaded == info.configLoaded && o.firmwareKB == info.firmwareKB) return;
-    o = info;
+    model().storage = info;  // sent rarely (mount, card change, every 10 min)
     model().dirty |= D_STORAGE;
 }
 
@@ -143,15 +151,46 @@ void setDeviceState(uint8_t device, uint8_t mask, bool online) {
     m.dirty |= D_DEVICES;
 }
 
+void setFileList(const FileList& list) {
+    ModelLock lock;
+    model().files = list;
+    model().dirty |= D_FILES;
+}
+
+namespace {
+constexpr size_t kFileTextCap = 64 * 1024;
+char* s_fileText = nullptr;  // kFileTextCap + 1, allocated on first use
+uint16_t* s_fileImage = nullptr;  // kImageMax^2 RGB565, allocated on first image
+}  // namespace
+
+const char* fileText() { return s_fileText ? s_fileText : ""; }
+const uint16_t* fileImage() { return s_fileImage; }
+
+void setFileView(const FileView& view, const char* text, const uint16_t* pixels) {
+    ModelLock lock;
+    if (!s_fileText) s_fileText = static_cast<char*>(heap_caps_calloc(1, kFileTextCap + 1, MALLOC_CAP_SPIRAM));
+    model().view = view;
+    if (pixels && view.image) {
+        if (!s_fileImage)
+            s_fileImage = static_cast<uint16_t*>(heap_caps_malloc((size_t)kImageMax * kImageMax * 2, MALLOC_CAP_SPIRAM));
+        if (s_fileImage && view.imgW <= kImageMax && view.imgH <= kImageMax)
+            memcpy(s_fileImage, pixels, (size_t)view.imgW * view.imgH * 2);
+        else
+            model().view.image = false;
+    }
+    if (s_fileText) {
+        const size_t n = text && view.textLen < kFileTextCap ? view.textLen : (text ? kFileTextCap : 0);
+        if (n) memcpy(s_fileText, text, n);
+        s_fileText[n] = 0;
+        model().view.textLen = n;
+    }
+    model().dirty |= D_FILEVIEW;
+}
+
 void setSystemInfo(const SystemInfo& info) {
     ModelLock lock;
     Model& m = model();
-    const SystemInfo& o = m.sys;  // field compare: struct padding is not zeroed
-    if (strcmp(o.ssid, info.ssid) == 0 && strcmp(o.ip, info.ip) == 0 && o.rssi == info.rssi &&
-        o.heapKB == info.heapKB && o.psramKB == info.psramKB && o.uptimeS / 60 == info.uptimeS / 60) {
-        return;  // uptime is shown in minutes
-    }
-    m.sys = info;
+    m.sys = info;  // the net task already rate-limits this to every 5 s
     m.dirty |= D_SYSTEM;
 }
 

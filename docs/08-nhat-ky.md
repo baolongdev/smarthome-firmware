@@ -168,6 +168,288 @@ Board chuyển từ COM4 sang **COM18** sau khi cắm cổng USB khác. Đã xá
   `LV_FONT_DECLARE`.
 - Board đổi lại từ COM18 về **COM4** khi cắm lại vào cổng USB cũ.
 
+## 16. Trang chi tiết trong Cài đặt
+
+- Các hàng Thẻ nhớ, config.json, Mạng, MQTT, Bộ nhớ trống, Thời gian chạy và
+  thẻ Giới thiệu chạm vào được; mỗi hàng mở một trang chi tiết (`P_DETAIL`,
+  `applyDetail()`).
+- `SystemInfo`/`StorageInfo` mở rộng: BSSID, kênh, gateway, subnet, DNS, MAC,
+  trạng thái MQTT, heap/PSRAM/flash, lý do reset, chip, ESP-IDF, loại thẻ, tốc
+  độ SPI, tóm tắt `config.json`.
+- **Kiểm chứng:** chạm thật (lệnh `drag` với y0 = y1) vào cả 7 hàng, chụp màn
+  hình từng trang chi tiết.
+- **Lưu ý khi test:** lệnh `scroll` (`lv_obj_scroll_by`) không chặn ở cuối
+  trang, có thể đẩy trang quá xa. Muốn cuộn như người dùng thì dùng `drag`.
+
+## 17. Chữ hiện thành ô vuông
+
+- **Triệu chứng:** một số chữ trong các trang chi tiết hiện thành ô vuông.
+- **Tìm ra:** tool mới `tools/check_font_coverage.py` quét mọi chuỗi trong code
+  và đối chiếu với glyph trong font đã biên dịch. Hai ký tự thiếu:
+  - `→` trong "5 → 60 giây" (trang Mạng, MQTT);
+  - `×` trong "480×480" (trang Giới thiệu).
+- **Nguyên nhân sâu hơn:** **Be Vietnam Pro không có mũi tên**. Khi thêm
+  `←`/`→` vào dải font, `lv_font_conv` báo lỗi và dừng giữa chừng: font không
+  được sinh lại, nhưng tool kiểm tra bản đầu vẫn báo OK vì chỉ so với danh
+  sách dải ký tự.
+- **Sửa:**
+  - thêm `× ± ≤ ≥` (font có) vào font;
+  - đổi `→` thành `–` trong chuỗi;
+  - tool kiểm tra giờ đọc glyph thật từ các file `.c` đã sinh.
+- **Phụ:** `tools/screenshot.py` tự thử lại khi khung ảnh thiếu điểm.
+- **Sự cố khi test:** vài cú chạm giả lập bị lệch toạ độ (do quán tính khi
+  cuộn), làm bật/tắt nhầm công tắc "Tự giảm sáng". Công tắc đã trở về trạng
+  thái **bật** như ban đầu. Từ đây phải chụp màn hình trước khi chạm.
+
+## 18. Bàn phím nhập mật khẩu
+
+- **Lỗi vị trí:** `lv_keyboard_create()` tự canh *đáy giữa*, nên
+  `set_pos(0, 188)` thành dịch thêm 188 px xuống dưới đáy, mất 3 hàng phím.
+  Sửa bằng `lv_obj_align(TOP_LEFT, 0, 188)`.
+- **Viết lại bố cục:** 5 hàng, có hàng số, font Be Vietnam Pro (dùng Montserrat
+  làm font dự phòng cho ký hiệu), màu phím rõ hơn, phím ✓ theo màu chủ đạo, popover.
+- **Lỗi biên dịch:** `lv_buttonmatrix_ctrl_t` là enum, C++ cần ép kiểu
+  (`KB_CTRL()`).
+- **Chữ lệch xuống khoảng 2 px** trong phím và trong ô nhập (do khoảng trống
+  dành cho dấu của font). Đã bù và đo lại trên ảnh chụp: lệch 0–0,5 px.
+- **Ô nhập trống sau khi gõ:** vùng nội dung (52 − 2 viền − 28 lề = 22 px)
+  nhỏ hơn chiều cao dòng (24 px), nên ô một dòng tự cuộn và đẩy chữ ra ngoài.
+  Sửa: lề 11/15 cho vùng nội dung đúng 24 px, chỉ cho cuộn ngang.
+- **Khi test:** lệnh `kbd`; log tạm in chỉ số phím, ký tự và chế độ (đã gỡ). Có
+  2 lần chữ gõ ra lạ, nhiều khả năng do người dùng chạm cùng lúc với cú chạm
+  giả lập.
+
+## 19. Trang Thẻ nhớ tự nhảy lên đầu; trình duyệt tệp
+
+- **Nhảy lên đầu:** `applyDetail()` xoá rồi dựng lại danh sách mỗi lần dữ liệu
+  đổi (5 giây một lần), nên vị trí cuộn về 0. Danh sách Wi-Fi bị y hệt.
+  - **Sửa:** lưu `scroll_y`, dựng lại, `lv_obj_update_layout()`, rồi
+    `lv_obj_scroll_to_y()`.
+  - **Kiểm chứng:** ảnh chụp trước và sau một lần làm mới giống hệt.
+- **Trình duyệt tệp:** trang "Tệp trên thẻ" và trang xem tệp (xem trước nội
+  dung, xoá chạm 2 lần), xử lý trong task `storage`.
+  - **Kiểm chứng:** `/` → `logs` → `events.log` → cuộn nội dung, trong một phiên
+    ghi log liên tục, không có chạm thật nào xen vào.
+- **Tối ưu:** task `ui` chỉ chép model sang snapshot khi có thay đổi (model giờ
+  chứa danh sách tệp và nội dung xem trước, khoảng 3 KB).
+- RAM tĩnh 76,7 KB (+11 KB).
+
+## 20. Giới thiệu lên đầu Cài đặt; trang Bộ nhớ trực tiếp
+
+- Thẻ Giới thiệu (logo BK) chuyển lên đầu trang Cài đặt.
+- Trang Bộ nhớ stream 4 lần/giây, có biểu đồ 15 giây (bật lại `LV_USE_CHART`);
+  sửa tại chỗ, không dựng lại trang (xem 04-giao-dien-hmi.md).
+- Thêm lệnh serial `detail <n>` để test mà không lẫn với thao tác chạm của
+  người dùng trên máy.
+- **Phát hiện:** heap nội đang dùng **88%**; thấp nhất còn **33 KB**, khối liên
+  tục lớn nhất 25 KB (trước khi thêm trình duyệt tệp là 52–62 KB). Các khoản
+  chiếm nhiều:
+  - 2 buffer vẽ LVGL 480×48 (2 × 45 KB);
+  - RAM tĩnh 76,7 KB (model + snapshot chứa danh sách tệp, nội dung xem trước);
+  - stack của 6 task (38 KB) và Wi-Fi.
+
+  Có thể lấy lại bằng cách giảm buffer vẽ xuống 480×32, hoặc chuyển model,
+  snapshot và bộ đệm tệp sang PSRAM. **Chưa làm.**
+
+## 21. Trang Bộ nhớ kiểu "instrument"
+
+- **Bỏ:** thấp nhất từ lúc bật, khối liên tục lớn nhất, "Dùng cho".
+- **Dựng lại theo hướng data-first:**
+  - số % lớn đọc trước;
+  - biểu đồ có trục giá trị (nhãn đặt đúng 5 vạch lưới `div_line_count(5)`),
+    mốc thời gian, chấm điểm mới nhất (`lv_chart_get_point_pos_by_id(…, cnt-1)`);
+  - không dùng thẻ nền, chỉ đường kẻ mảnh giữa các khối;
+  - Flash dùng thanh chia đoạn.
+- **Cảm hứng:** prompt "Premium ESP32 Data Visualization UI" do người dùng gửi.
+  Bộ 10 component và 5 màn hình trong prompt **chưa làm**.
+- **RAM nội lên 91%** (296/324 KB) sau khi thêm biểu đồ, chỉ còn khoảng 28 KB
+  trống. Nên giảm buffer vẽ hoặc chuyển dữ liệu UI sang PSRAM (mục 20).
+
+---
+
+## 22. Gộp RAM và PSRAM vào một biểu đồ
+
+- Hai biểu đồ riêng được thay bằng `memPanel()`: hai chỉ số đặt cạnh nhau ở trên
+  (`memMetric()`), bên dưới là **một `lv_chart` có hai series** (accent và accent2)
+  dùng chung trục 0–100 % và mốc thời gian, mỗi series có chấm điểm mới nhất riêng.
+- Tiêu đề màu của mỗi chỉ số đóng vai trò chú thích, không cần legend riêng.
+- Giảm được một chart (tiết kiệm một ít RAM nội). Ảnh chụp lúc kiểm tra: RAM 95%,
+  PSRAM 6%, nên vẫn cần làm việc giảm RAM ở mục 21.
+
+---
+
+## 23. Giải phóng RAM nội: 95% xuống 49%
+
+- **Nguyên nhân:** LVGL dùng `malloc` của C. Với cấu hình Arduino
+  (`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL = 4096`), mọi khối dưới 4 KB, tức gần
+  như toàn bộ widget và style, đều nằm ở SRAM nội.
+- **Cách làm:**
+  - Thêm bộ cấp phát LVGL riêng `src/hmi/lv_mem_psram.c` (PSRAM trước, SRAM nội
+    dự phòng) và đặt `LV_STDLIB_CUSTOM` trong `lv_conf.h`.
+  - Giảm buffer vẽ từ 480×48 xuống 480×32 (tiết kiệm 2 × 15 KB).
+  - Model và `s_snap` được cấp phát ở PSRAM qua `newModel()` (tiết kiệm 11 KB).
+  - Buffer 4 KB dùng khi cập nhật firmware từ thẻ nhớ chuyển sang PSRAM.
+- **Kết quả đo** (lệnh `tasks`, trang Bộ nhớ): RAM nội trống **171 KB**
+  (thấp nhất 167 KB), so với khoảng 16 KB trước đó; PSRAM còn trống 7,5 MB.
+  Giao diện và thao tác cuộn vẫn bình thường.
+
+---
+
+## 24. Header/footer theo trang, đo tốc độ vẽ, build nhanh hơn
+
+- **Header chỉ còn ở Tổng quan.** Điều khiển và Cài đặt dùng thêm 52 px phía
+  trên. Các trang con của Cài đặt ẩn luôn thanh điều hướng và dùng gần trọn
+  màn hình (y 12..468). Đồng hồ ẩn khi chưa có giờ.
+- **Độ sáng không đổi khi kéo thanh trượt:** `setup()` gọi `pinMode(38, OUTPUT)`
+  và `digitalWrite(HIGH)` sau `display.begin()`. Hai lệnh này tách GPIO38 khỏi
+  kênh LEDC mà `Light_PWM` đã gắn, nên đèn nền luôn ở 100%. Đã bỏ, thay bằng
+  `display.setBrightness(255)`. Mức 10% trước đây gần như tắt màn hình, nên giờ
+  thanh trượt 10..100% được ánh xạ sang duty `HMI_BACKLIGHT_MIN_DUTY` (40)..255.
+- **Lề và thanh tiêu đề:** mọi lề nhìn thấy đều 16 px (đo trên ảnh chụp).
+  Thanh tiêu đề trang con cao 64 px, mũi tên và nút làm mới cách mép 24 px,
+  tiêu đề căn giữa. Trang Tệp không còn dòng "/" hay "/logs" lặp lại tên thư
+  mục.
+- **Trang con dùng một lề 24 px cho mọi thứ** (mũi tên, tiêu đề, nội dung,
+  mép dưới), đo trên ảnh chụp: thanh tiêu đề x 24..456, nội dung x 24..455.
+- **Căn giữa thanh tiêu đề trang con:** tiêu đề nằm thấp hơn mũi tên quay lại
+  khoảng 2,5 px (đo trên ảnh chụp: tâm chữ hoa ở y 38,5, mũi tên ở y 36) vì font
+  chừa chỗ cho dấu phía trên. Đã dời lên bằng `kBarTitleY = 11` (khối 2 dòng của
+  trang Tệp dời theo); sau khi sửa, tâm chữ ở y 36,5.
+- **Lệnh console `bench [psram|hybrid]`:** dựng lại toàn bộ UI rồi đo 20 lần
+  vẽ lại toàn màn hình (tính cả flush). Kết quả:
+
+  | Bộ cấp phát LVGL | Vẽ lại (Cài đặt / Tổng quan) | RAM nội trống |
+  |---|---|---|
+  | psram (mặc định) | khoảng 100–105 ms / 62 ms | 167 KB |
+  | hybrid (khối ≤ 1 KB ở RAM nội, giữ 96 KB dự trữ) | như trên | 96 KB |
+
+  Để widget ở PSRAM **không làm chậm** việc vẽ, nên mặc định là `LVMEM_PSRAM`.
+  Toàn bộ widget LVGL chỉ chiếm khoảng 48 KB.
+- **Build:** `lib_ldf_mode` đổi từ `chain+` sang `chain`. Một lần build sửa
+  `hmi_ui.cpp` + `hmi_theme.h` giảm từ khoảng 10 phút xuống 3 phút 38 giây,
+  sửa riêng `hmi_ui.cpp` còn khoảng 2 phút. Thủ phạm là scons tiền xử lý
+  mọi `#if` của LVGL ở mỗi lần build (tiến trình Python tốn khoảng 480 giây
+  CPU). Windows Defender quét từng tiến trình gcc; thêm loại trừ (cần quyền
+  admin) cho `%USERPROFILE%\.platformio` và thư mục dự án để nhanh hơn nữa.
+
+---
+
+## 25. Cuộn mượt hơn, chuyển trang không còn "vẽ dần"
+
+Đo bằng `bench` (vẽ lại toàn màn hình, tính cả flush, đơn vị ms):
+
+| Bước | Cài đặt | Tổng quan | Bộ nhớ |
+|---|---|---|---|
+| Ban đầu: vẽ / flush / tổng | 57 / 42 / 100 | 62 / 42 / 104 | 11 / 41 / 53 |
+| Flush đảo byte rồi memcpy; 1 buffer 480×64 | 44 / 24 / 68 | 45 / 24 / 69 | 7 / 24 / 31 |
+| `-O2` | 39 / 25 / 64 | 39 / 25 / 64 | 7 / 25 / 31 |
+| 2 luồng vẽ (2 nhân) | **30 / 25 / 56** | **30 / 25 / 55** | **6 / 25 / 31** |
+
+- **Flush chậm** là do framebuffer lưu RGB565 đảo byte: `pushImage` dạng
+  `rgb565_t` khiến LovyanGFX đổi từng điểm ảnh. Sau khi sửa, flush ~25 ms là
+  giới hạn băng thông PSRAM (DMA màn hình đọc liên tục ~28 MB/s). Đã thử ghi
+  thẳng vào framebuffer kèm đảo byte theo từ 32 bit: kết quả y hệt, nên giữ
+  cách dùng LovyanGFX.
+- **Bỏ fade khi chuyển trang** (xem 4.1).
+- **Stack luồng vẽ:** `StackType_t` của ESP-IDF dài 1 byte, nên
+  `LV_DRAW_THREAD_STACK_SIZE` là số byte thật. Lần đầu đặt 32 KB làm RAM nội
+  tụt từ 168 xuống 103 KB; đặt 8 KB thì còn 151 KB.
+- **Tổng kết:** cuộn trang Cài đặt nhanh gần gấp đôi (khoảng 10 lên 18 khung/giây
+  khi vẽ lại toàn màn hình). Màn hình vẫn có thể bị xé hình (tearing) vì chỉ có
+  một framebuffer; IDF 4.4 không hỗ trợ hai framebuffer cho panel RGB.
+
+---
+
+## 26. Tận dụng PSRAM, flash và thẻ nhớ
+
+Trước đó PSRAM còn trống 7,4 MB và phân vùng flash 3,4 MB bỏ không. Đã thêm:
+
+- **`src/datalog.cpp` (PSRAM, ~263 KB):**
+  - lịch sử cảm biến 24 giờ / 10 giây và 7 ngày / 1 phút;
+  - 400 sự kiện gần nhất.
+- **Trang mới:** "Lịch sử cảm biến" (biểu đồ 1 giờ / 24 giờ / 7 ngày) và
+  "Nhật ký sự kiện", trong mục Cài đặt → DỮ LIỆU. Chạm vào đồng hồ hoặc thẻ
+  chỉ số ở Tổng quan cũng mở trang lịch sử, và nút ← quay về Tổng quan.
+- **LittleFS** trên phân vùng `spiffs`: bản sao `config.json` dùng khi không
+  có thẻ, lịch sử mỗi giờ.
+- **Thẻ nhớ:**
+  - lịch sử lưu 10 phút/lần;
+  - tự xoá CSV cảm biến cũ hơn `logDays`;
+  - sao lưu firmware đang chạy trước khi cập nhật (`sd restore`).
+- **Trình xem tệp đọc tới 64 KB** (trước 1,5 KB).
+- **Sửa:** stack task `storage` từ 6 lên 8 KB. Lúc trước chỉ còn trống 792 B;
+  giờ còn 4,5 KB.
+- **Đo được:** ghi lịch sử ra thẻ 209 ms, ra flash 4,5 giây (khối 4 KB, nghỉ
+  20 ms). RAM nội trống 148 KB, PSRAM trống 7,3 MB.
+- **Còn lại:**
+  - Khi mới có vài phút dữ liệu, khung 24 giờ / 7 ngày chỉ có một điểm ở mép
+    phải và gần như không thấy.
+  - Log báo lỗi "does not exist" khi tệp chưa có lần đầu (vô hại).
+
+---
+
+## 27. Rác hình khi mở bảng nhập mật khẩu Wi-Fi
+
+- **Triệu chứng:** chạm một mạng trong danh sách Wi-Fi thì màn hình hiện mảng
+  màu xanh/tím và bàn phím lặp lại, khoảng 200 ms rồi mới đúng.
+  `lv_snapshot` (lệnh `shot`) không thấy lỗi vì LVGL vẽ lại riêng ra bộ nhớ.
+- **Công cụ:** lệnh `shot fb [ms]` chép framebuffer thật sau `ms` mili giây.
+  `tools/screenshot.py` nhận thêm chuỗi lệnh, ví dụ `"kbd;shot fb 100"`.
+- **Loại trừ:**
+  - Chỉ một luồng vẽ vẫn lỗi y hệt, nên không phải do vẽ hai luồng.
+  - Đảo byte ngược lại sau flush thì hết sai màu nhưng vẫn còn bóng lặp mỗi
+    64 px (bằng chiều cao bộ đệm vẽ).
+- **Nguyên nhân:** `lv_obj_fade_in()` của bảng nền đặc toàn màn hình. LVGL coi
+  bảng là che kín nên không vẽ phần bên dưới, mà trộn bảng bán trong suốt lên
+  nội dung cũ trong bộ đệm. Flush đảo byte tại chỗ làm phần rác đó sai màu thêm.
+- **Sửa:**
+  - Bỏ fade ở bảng mật khẩu và ở màn hình khởi động (`lv_obj_delete_delayed`).
+  - Kiểm tra trên framebuffer thật: sạch ngay từ 30 ms.
+  - Thanh tiêu đề của bảng đổi sang kiểu chung: mũi tên cách mép 24 px, tiêu
+    đề và tên mạng căn giữa.
+
+---
+
+## 28. Gom trang Cài đặt
+
+- **Từ 15 hàng / 6 mục xuống 8 hàng / 3 mục.** Ngoài trang Cài đặt chỉ còn
+  phần hay dùng: Wi-Fi, Mạng & MQTT, 3 hàng màn hình, Thẻ nhớ, Lịch sử cảm
+  biến, Hệ thống.
+- **Gộp vào trang con:**
+  - Mạng + MQTT thành một trang.
+  - Bộ nhớ + Thời gian chạy + lối vào Nhật ký sự kiện thành trang "Hệ thống".
+  - Tệp trên thẻ, config.json và Cập nhật firmware vào trang Thẻ nhớ.
+- **Điều hướng lồng nhau:** `ui.detailParent`, `openSubDetail()`. Nút ← quay về
+  trang cha; trình duyệt tệp ở thư mục gốc thì quay về trang Thẻ nhớ.
+- **Lỗi tránh được:** `ui.sdFw` được đặt về `nullptr` trước khi
+  `applyDetail()` xoá danh sách, vì `applyStorage()` chạy cả khi trang khác
+  đang mở.
+- **Đổi màu chủ đạo không còn nhảy về đầu trang:** `buildAll()` dựng lại mọi
+  widget theo bảng màu mới. Giờ nó lưu vị trí cuộn của trang đang mở, rồi sau
+  khi dựng xong gọi `lv_obj_update_layout()` + `lv_obj_scroll_to_y()`. Đã thử
+  trên board: chạm "Màu chủ đạo" khi đang cuộn giữa trang, hàng vẫn ở y 228.
+
+---
+
+## 29. Xem CSV dạng bảng, xem trước ảnh
+
+- **CSV:**
+  - `lv_table` (bật `LV_USE_TABLE`), dòng tiêu đề tô qua `LV_EVENT_DRAW_TASK_ADDED`.
+  - 200 dòng mới nhất, độ rộng cột ước theo ký tự dài nhất (9 px/ký tự + 28 px).
+- **Ảnh JPG/PNG/BMP:**
+  - Đọc kích thước từ header tệp, giải mã bằng LovyanGFX vào `LGFX_Sprite` trong
+    PSRAM, đảo byte về RGB565 thường, chép sang bộ đệm ảnh của model.
+  - UI dùng `lv_image_dsc_t` trỏ vào bộ đệm đó; gọi `lv_image_cache_drop()` vì
+    địa chỉ không đổi giữa các ảnh.
+- **Lỗi phát hiện khi làm:** `kTextCap = 64 * 1024` khai báo kiểu `uint16_t`
+  nên thành 0. Trình xem văn bản 64 KB ở mục 26 thực ra chưa từng chạy (đọc
+  0 byte, mọi tệp bị coi là "phần cuối"). Đã sửa sang `uint32_t`; mở thử
+  `events.log` và CSV đều đúng.
+- **Khác:**
+  - Mở tệp mới thì cuộn về đầu trang.
+  - Stack task `storage` tăng lên 12 KB cho bộ giải mã ảnh.
+- **Chưa thử:** JPG và PNG thật, vì thẻ hiện chỉ có ảnh BMP do panel tự chụp.
+
 ---
 
 ## Việc còn lại

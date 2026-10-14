@@ -6,11 +6,18 @@
 #define LV_COLOR_DEPTH 16
 
 // Use the ESP32 heap (large blocks land in PSRAM, e.g. the screenshot buffer).
-#define LV_USE_STDLIB_MALLOC LV_STDLIB_CLIB
+// Widgets, styles and draw layers live in PSRAM (src/hmi/lv_mem_psram.c):
+// internal RAM is kept for the DMA draw buffers, Wi-Fi and task stacks.
+#define LV_USE_STDLIB_MALLOC LV_STDLIB_CUSTOM
 #define LV_USE_STDLIB_STRING LV_STDLIB_CLIB
 #define LV_USE_STDLIB_SPRINTF LV_STDLIB_CLIB
 
-#define LV_USE_OS LV_OS_NONE
+// Two software draw units, each in its own FreeRTOS task, so rendering uses
+// both cores (only the `ui` task calls LVGL; the draw tasks are internal).
+#define LV_USE_OS LV_OS_FREERTOS
+#define LV_DRAW_SW_DRAW_UNIT_CNT 2
+// Real stack per draw task (ESP-IDF StackType_t is 1 byte), internal RAM.
+#define LV_DRAW_THREAD_STACK_SIZE (8 * 1024)
 #define LV_DEF_REFR_PERIOD 20  // ms; 250 ms animations get ~12 frames
 
 #define LV_USE_LOG 1
@@ -28,7 +35,6 @@
 
 // Not used by this UI: keep flash and RAM down.
 #define LV_USE_CALENDAR 0
-#define LV_USE_CHART 0
 #define LV_USE_IMAGEBUTTON 0
 #define LV_USE_LED 0
 #define LV_USE_MENU 0
@@ -37,7 +43,7 @@
 #define LV_USE_SCALE 0
 #define LV_USE_SPAN 0
 #define LV_USE_SPINBOX 0
-#define LV_USE_TABLE 0
+#define LV_USE_TABLE 1  // CSV preview
 #define LV_USE_TABVIEW 0
 #define LV_USE_TILEVIEW 0
 #define LV_USE_WIN 0
@@ -47,6 +53,7 @@
 #define LV_USE_CHECKBOX 0
 #define LV_USE_ANIMIMG 0
 
+// Live memory graph uses LV_USE_CHART (default on).
 // Wi-Fi password entry: LV_USE_KEYBOARD / TEXTAREA / BUTTONMATRIX stay at their default (on).
 
 #endif  // LV_CONF_H
