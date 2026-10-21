@@ -99,6 +99,7 @@ struct Ui {
     lv_obj_t* joinStatus;
     lv_obj_t* joinBtn;
     lv_obj_t* joinBtnText;
+    lv_obj_t* openNote;  // replaces the password field for open networks
     char joinSsid[33] = "";
     // SD card file browser
     lv_obj_t* filesTitle;
@@ -114,10 +115,20 @@ struct Ui {
     lv_obj_t* detailList;
     uint8_t detailTopic = T_NET;
     bool joinSecure = true;
+    bool joinSaved = false;     // using the stored password (no keyboard)
+    lv_obj_t* openNoteTitle;
+    lv_obj_t* openNoteText;
+    lv_obj_t* openNoteIcon;
+    lv_obj_t* otherPass;        // "Nhập mật khẩu khác" on a saved network
     // firmware update overlay
     lv_obj_t* update;
     lv_obj_t* updateBar;
     lv_obj_t* updateText;
+    // screensaver: BK lockup shown while dimmed
+    lv_obj_t* saver;
+    lv_obj_t* saverLockup;
+    lv_timer_t* saverTimer;
+    uint8_t saverStep;
     bool dimmed = false;
 };
 Ui ui;
@@ -652,7 +663,7 @@ void applyDevices(const Model& m) {
             lv_label_set_text(ui.devStatus[d], "Đang kết nối…");
             lv_obj_set_style_text_color(ui.devStatus[d], muted(), 0);
         } else if (online) {
-            lv_label_set_text(ui.devStatus[d], m.devices[d].host);
+            lv_label_set_text(ui.devStatus[d], "Trực tuyến");
             lv_obj_set_style_text_color(ui.devStatus[d], muted(), 0);
         } else {
             lv_label_set_text(ui.devStatus[d], "Ngoại tuyến");
@@ -691,7 +702,7 @@ void buildBrightness(lv_obj_t* card) {
     lv_obj_remove_style_all(ui.slider);
     lv_obj_set_size(ui.slider, 400, 8);
     lv_obj_align(ui.slider, LV_ALIGN_BOTTOM_MID, 0, -18);
-    lv_slider_set_range(ui.slider, 10, 100);
+    lv_slider_set_range(ui.slider, 0, 100);  // 0 % = HMI_BACKLIGHT_MIN_DUTY, never dark
     lv_obj_set_ext_click_area(ui.slider, 20);
     lv_obj_set_style_bg_opa(ui.slider, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_bg_color(ui.slider, elevated(), LV_PART_MAIN);
@@ -838,7 +849,8 @@ void buildSettings(lv_obj_t* page) {
     buildBrightness(display);
     lv_obj_t* dimRow = nullptr;
     char dimText[40];
-    snprintf(dimText, sizeof(dimText), "Tự giảm sáng sau %d giây", HMI_DIM_AFTER_MS / 1000);
+    if (HMI_DIM_AFTER_MS % 60000 == 0) snprintf(dimText, sizeof(dimText), "Màn hình chờ sau %d phút", HMI_DIM_AFTER_MS / 60000);
+    else snprintf(dimText, sizeof(dimText), "Màn hình chờ sau %d giây", HMI_DIM_AFTER_MS / 1000);
     lv_obj_t* dimValue = settingsRow(display, ICON_CLOCK, dimText, false, &dimRow);
     lv_label_set_text(dimValue, "");  // spacer pushing the switch to the right
     ui.dimSwitch = makeSwitch(dimRow);
@@ -2301,6 +2313,7 @@ void applyWifiList(const Model& m) {
         lv_obj_set_flex_grow(name, 1);
         lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
         if (current) label(r, &hmi_font_13_r, success(), "Đã kết nối");
+        else if (n.saved) label(r, &hmi_font_13_r, muted(), "Đã lưu");
         if (n.secure) label(r, &hmi_icons_20, muted(), ICON_LOCK);
         lv_obj_add_event_cb(r, [](lv_event_t* e) {
             const auto idx = static_cast<uint8_t>(reinterpret_cast<uintptr_t>(lv_event_get_user_data(e)));
@@ -2332,33 +2345,28 @@ void setJoinStatus(const char* txt, lv_color_t color, bool busy) {
     }
 }
 
+void sheetLayout(bool secure);
+
 void openSheet(const WifiNetwork& n) {
     strlcpy(ui.joinSsid, n.ssid, sizeof(ui.joinSsid));
     ui.joinSecure = n.secure;
+    ui.joinSaved = n.secure && n.saved;
     lv_label_set_text(ui.sheetSsid, n.ssid);
     lv_textarea_set_text(ui.pass, "");
     lv_textarea_set_password_mode(ui.pass, true);
     lv_label_set_text(lv_obj_get_child(ui.eye, 0), ICON_EYE);
     const lv_obj_flag_t h = LV_OBJ_FLAG_HIDDEN;
-    if (n.secure) {
-        lv_obj_remove_flag(ui.pass, h);
-        lv_obj_remove_flag(ui.eye, h);
-        lv_obj_remove_flag(ui.kb, h);
-        setJoinStatus("", muted(), false);
-    } else {
-        lv_obj_add_flag(ui.pass, h);
-        lv_obj_add_flag(ui.eye, h);
-        lv_obj_add_flag(ui.kb, h);
-        setJoinStatus("Mạng mở, không cần mật khẩu", muted(), false);
-    }
+    sheetLayout(n.secure && !ui.joinSaved);
+    setJoinStatus("", muted(), false);
     lv_keyboard_set_mode(ui.kb, LV_KEYBOARD_MODE_TEXT_LOWER);
     lv_obj_remove_flag(ui.sheet, h);  // no fade: see selectPage()
 }
 
 void submitJoin() {
     if (lv_obj_has_state(ui.joinBtn, LV_STATE_DISABLED)) return;
-    const char* pw = ui.joinSecure ? lv_textarea_get_text(ui.pass) : "";
-    if (ui.joinSecure && strlen(pw) < 8) {
+    // Saved network: "\x01" (wifimgr::kUseSaved) asks for the stored password.
+    const char* pw = !ui.joinSecure ? "" : ui.joinSaved ? "\x01" : lv_textarea_get_text(ui.pass);
+    if (ui.joinSecure && !ui.joinSaved && strlen(pw) < 8) {
         setJoinStatus("Mật khẩu cần ít nhất 8 ký tự", error(), false);
         return;
     }
@@ -2573,7 +2581,75 @@ void buildSheet(lv_obj_t* scr) {
     lv_obj_center(ui.joinBtnText);
     lv_obj_add_event_cb(ui.joinBtn, [](lv_event_t*) { submitJoin(); }, LV_EVENT_CLICKED, nullptr);
 
+    // Open network: a note takes the password field's place and the button
+    // spans the width (see sheetLayout()).
+    ui.openNote = box(ui.sheet);
+    lv_obj_set_pos(ui.openNote, kMargin, 72);
+    lv_obj_set_size(ui.openNote, 448, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(ui.openNote, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(ui.openNote, surface(), 0);
+    lv_obj_set_style_radius(ui.openNote, 12, 0);
+    lv_obj_set_style_pad_all(ui.openNote, 16, 0);
+    lv_obj_set_flex_flow(ui.openNote, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(ui.openNote, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(ui.openNote, 14, 0);
+    iconChip(ui.openNote, ICON_WIFI, info(), &ui.openNoteIcon);
+    lv_obj_t* col = flexCol(ui.openNote, 2);
+    lv_obj_set_flex_grow(col, 1);
+    ui.openNoteTitle = label(col, &hmi_font_14_m, text(), "");
+    ui.openNoteText = label(col, &hmi_font_13_r, muted(), "");
+    lv_obj_set_width(ui.openNoteText, LV_PCT(100));
+    lv_label_set_long_mode(ui.openNoteText, LV_LABEL_LONG_WRAP);
+    lv_obj_add_flag(ui.openNote, LV_OBJ_FLAG_HIDDEN);
+
+    // Saved network: offer typing a new password instead.
+    ui.otherPass = box(ui.sheet);
+    lv_obj_set_size(ui.otherPass, 448, 44);
+    lv_obj_set_style_radius(ui.otherPass, 12, 0);
+    makeClickable(ui.otherPass);
+    lv_obj_t* op = label(ui.otherPass, &hmi_font_14_m, accent(), "Nhập mật khẩu khác");
+    lv_obj_center(op);
+    lv_obj_add_event_cb(ui.otherPass, [](lv_event_t*) {
+        ui.joinSaved = false;
+        sheetLayout(true);
+    }, LV_EVENT_CLICKED, nullptr);
+    lv_obj_add_flag(ui.otherPass, LV_OBJ_FLAG_HIDDEN);
+
     buildKeyboard(ui.sheet);
+}
+
+// Secured: password field, small button on the right, status beside it,
+// keyboard below.  Open or saved network: note card, full-width button,
+// status under it (saved: plus "Nhập mật khẩu khác").
+void sheetLayout(bool secure) {
+    if (!secure) {
+        const bool saved = ui.joinSaved;
+        lv_label_set_text(ui.openNoteTitle, saved ? "Đã lưu mật khẩu" : "Mạng mở");
+        lv_label_set_text(ui.openNoteText, saved ? "Kết nối bằng mật khẩu đã lưu trên panel"
+                                                 : "Không cần mật khẩu · dữ liệu không được mã hoá");
+        lv_label_set_text(ui.openNoteIcon, saved ? ICON_LOCK : ICON_WIFI);
+        if (saved) lv_obj_remove_flag(ui.otherPass, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_pos(ui.otherPass, kMargin, 72 + 76 + 16 + 52 + 12);
+    }
+    if (secure || !ui.joinSaved) lv_obj_add_flag(ui.otherPass, LV_OBJ_FLAG_HIDDEN);
+    const lv_obj_flag_t h = LV_OBJ_FLAG_HIDDEN;
+    for (lv_obj_t* o : {ui.pass, ui.eye, ui.kb}) {
+        if (secure) lv_obj_remove_flag(o, h);
+        else lv_obj_add_flag(o, h);
+    }
+    if (secure) lv_obj_add_flag(ui.openNote, h);
+    else lv_obj_remove_flag(ui.openNote, h);
+    const int32_t statusY = secure ? 145 : 72 + 76 + 16 + 52 + (ui.joinSaved ? 12 + 44 + 12 : 16);
+    lv_obj_set_y(ui.joinStatus, statusY);
+    lv_obj_set_y(ui.joinSpinner, statusY - 1);
+    lv_obj_set_width(ui.joinStatus, secure ? 280 : 448);
+    if (secure) {
+        lv_obj_set_pos(ui.joinBtn, 480 - kMargin - 140, 132);
+        lv_obj_set_size(ui.joinBtn, 140, 44);
+    } else {
+        lv_obj_set_pos(ui.joinBtn, kMargin, 72 + 76 + 16);
+        lv_obj_set_size(ui.joinBtn, 448, 52);
+    }
 }
 
 void applyJoin(const Model& m) {
@@ -2689,17 +2765,42 @@ void applyLink(const Model& m) {
 
 // ---------- backlight / auto-dim ----------
 
+// Screensaver: the HCMUT lockup centred on black.  It moves by at most 4 px a
+// minute (invisible, but no pixel shows the same thing for hours; larger
+// jumps looked like a layout bug).
+void saverDrift(lv_timer_t*) {
+    static const int8_t kOffsets[][2] = {{0, 0}, {-3, -2}, {2, -4}, {4, 2}, {-2, 4}, {0, -3}, {-4, 0}};
+    ui.saverStep = (ui.saverStep + 1) % (sizeof(kOffsets) / sizeof(kOffsets[0]));
+    lv_obj_align(ui.saverLockup, LV_ALIGN_CENTER, kOffsets[ui.saverStep][0], kOffsets[ui.saverStep][1]);
+}
+
+void showSaver(bool on) {
+    if (!ui.saver) return;
+    if (on) {
+        ui.saverStep = 0;
+        lv_obj_align(ui.saverLockup, LV_ALIGN_CENTER, 0, 0);
+        lv_obj_remove_flag(ui.saver, LV_OBJ_FLAG_HIDDEN);  // no fade: see selectPage()
+        if (!ui.saverTimer) ui.saverTimer = lv_timer_create(saverDrift, 60000, nullptr);
+    } else {
+        lv_obj_add_flag(ui.saver, LV_OBJ_FLAG_HIDDEN);
+        if (ui.saverTimer) lv_timer_delete(ui.saverTimer);
+        ui.saverTimer = nullptr;
+    }
+}
+
 void onWake() {
     ui.dimmed = false;
+    showSaver(false);
     if (ui.cb.backlight) ui.cb.backlight(s_snap.brightness);
     lv_display_trigger_activity(nullptr);
 }
 
 void updateDim() {
     const Model& m = s_snap;
-    if (ui.dimmed || !m.autoDim) return;
+    if (ui.dimmed || !m.autoDim || m.updatePct >= 0) return;  // never hide a firmware update
     if (lv_display_get_inactive_time(nullptr) < HMI_DIM_AFTER_MS) return;
     ui.dimmed = true;
+    showSaver(true);
     if (ui.cb.backlight) ui.cb.backlight(HMI_DIM_BRIGHTNESS_PCT);
     port::armWakeGuard(onWake);
 }
@@ -2712,12 +2813,11 @@ void updateDim() {
 // school name).  Shown once at power-up, fades out, then deletes itself; both
 // the fade and the delete are bound to the object, so a rebuild during the
 // splash simply removes it.
-void buildSplash(lv_obj_t* scr) {
-    lv_obj_t* s = box(scr);
-    lv_obj_set_size(s, 480, 480);
-    lv_obj_set_style_bg_opa(s, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(s, bg(), 0);
-    lv_obj_add_flag(s, LV_OBJ_FLAG_CLICKABLE);  // swallow taps while it is up
+// HCMUT lockup (brand guide): logo, ĐHQG-HCM line, school name, BK-blue rule,
+// product name.  Shared by the boot splash and the screensaver.
+lv_obj_t* brandLockup(lv_obj_t* parent) {
+    lv_obj_t* s = box(parent);
+    lv_obj_set_size(s, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(s, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(s, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_row(s, 6, 0);
@@ -2735,8 +2835,31 @@ void buildSplash(lv_obj_t* scr) {
     lv_obj_set_style_bg_color(bar, lv_color_hex(0x1488DB), 0);  // BK blue, whatever the palette
     lv_obj_set_style_margin_ver(bar, 10, 0);
     label(s, &hmi_font_13_r, muted(), "Smart Home Panel");
+    return s;
+}
 
+lv_obj_t* blackCover(lv_obj_t* scr) {
+    lv_obj_t* s = box(scr);
+    lv_obj_set_size(s, 480, 480);
+    lv_obj_set_style_bg_opa(s, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(s, bg(), 0);
+    lv_obj_add_flag(s, LV_OBJ_FLAG_CLICKABLE);  // swallow taps meant for the page below
+    return s;
+}
+
+void buildSplash(lv_obj_t* scr) {
+    lv_obj_t* s = blackCover(scr);
+    lv_obj_center(brandLockup(s));
     lv_obj_delete_delayed(s, 2000);  // no fade: see selectPage()
+}
+
+void buildSaver(lv_obj_t* scr) {
+    ui.saver = blackCover(scr);
+    ui.saverLockup = brandLockup(ui.saver);
+    lv_obj_center(ui.saverLockup);
+    lv_obj_add_flag(ui.saver, LV_OBJ_FLAG_HIDDEN);
+    // A real touch is swallowed by the wake guard (port); this covers the rest.
+    lv_obj_add_event_cb(ui.saver, [](lv_event_t*) { onWake(); }, LV_EVENT_CLICKED, nullptr);
 }
 
 // Build (or rebuild after a palette change) every widget for the current palette.
@@ -2746,6 +2869,9 @@ void buildAll() {
     const bool dimmed = ui.dimmed;
     // A palette change rebuilds every widget: keep the reader where they were.
     const int32_t keepY = ui.page[page] ? lv_obj_get_scroll_y(ui.page[page]) : 0;
+    // ...and the detail page they had open (its title and content are built
+    // on demand by showTopic(), not by buildDetail()).
+    const uint8_t topic = ui.detailTopic, back = ui.detailBack, parent = ui.detailParent, range = ui.histRange;
     lv_anim_delete(&ui, gaugeAnimCb);
     lv_obj_t* scr = lv_screen_active();
     lv_obj_clean(scr);
@@ -2775,8 +2901,15 @@ void buildAll() {
     buildNav(scr);
     buildSheet(scr);
     buildUpdateOverlay(scr);
-    selectPage(page);
-    if (keepY) {
+    buildSaver(scr);
+    if (ui.dimmed) showSaver(true);  // palette changed while the saver was up
+    ui.detailTopic = topic;
+    ui.detailBack = back;
+    ui.detailParent = parent;
+    ui.histRange = range;
+    if (page == P_DETAIL) showTopic(topic);  // selects P_DETAIL itself
+    else selectPage(page);
+    if (keepY && page != P_DETAIL) {
         lv_obj_update_layout(ui.page[page]);  // the content height must be known to scroll
         lv_obj_scroll_to_y(ui.page[page], keepY, LV_ANIM_OFF);
     }
@@ -2844,7 +2977,7 @@ void serveRequests() {
         } else if (r.type == REQ_DETAIL) {
             if (r.page < T_COUNT) openDetail(r.page);
         } else if (r.type == REQ_KEYBOARD) {
-            WifiNetwork n{"Wi-Fi thử nghiệm", -58, true};
+            WifiNetwork n{"Wi-Fi thử nghiệm", -58, r.page == 0};  // page 1: open network
             openSheet(n);
         } else if (r.type == REQ_FILE) {
             openFile(s_reqPath);
@@ -2974,8 +3107,8 @@ void benchmark(uint8_t policy) {
     if (s_requests) xQueueSend(s_requests, &r, 0);
 }
 
-void previewKeyboard() {
-    Request r{REQ_KEYBOARD, 0, nullptr, nullptr};
+void previewKeyboard(bool open) {
+    Request r{REQ_KEYBOARD, static_cast<uint8_t>(open), nullptr, nullptr};
     if (s_requests) xQueueSend(s_requests, &r, 0);
 }
 

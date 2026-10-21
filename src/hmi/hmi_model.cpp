@@ -69,7 +69,7 @@ void setRelay(uint8_t index, bool on) {
 
 void setBrightness(uint8_t pct) {
     ModelLock lock;
-    pct = pct < 10 ? 10 : (pct > 100 ? 100 : pct);
+    pct = pct > 100 ? 100 : pct;
     if (model().brightness == pct) return;
     model().brightness = pct;
     model().dirty |= D_BRIGHTNESS;

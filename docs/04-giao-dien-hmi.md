@@ -34,10 +34,11 @@ Theo bộ nhận diện trong `docs/brand/source/brand-guidelines.pdf`:
 
 | Vị trí | Nội dung |
 |---|---|
-| **Màn khởi động** (1,8 giây, rồi mờ dần 350 ms) | logo 132 px; "ĐẠI HỌC QUỐC GIA TP.HCM"; "TRƯỜNG ĐẠI HỌC BÁCH KHOA"; vạch xanh `#1488DB`; "Smart Home Panel". Chỉ hiện lúc bật nguồn, không hiện lại khi đổi bộ màu; chạm vào lúc này không có tác dụng |
+| **Màn khởi động** (2 giây, tắt ngay, không mờ dần) | logo 132 px; "ĐẠI HỌC QUỐC GIA TP.HCM"; "TRƯỜNG ĐẠI HỌC BÁCH KHOA"; vạch xanh `#1488DB`; "Smart Home Panel". Chỉ hiện lúc bật nguồn, không hiện lại khi đổi bộ màu; chạm vào lúc này không có tác dụng |
 | **Header** | logo 32 px trước tên phòng |
 | **Cài đặt → GIỚI THIỆU** | logo 48 px, tên ĐHQG-HCM, tên trường, phiên bản firmware (thay cho hàng "Firmware" cũ) |
 | **Bộ màu "Bách Khoa"** | màu chữ ký `#1488DB` (Cài đặt → Màu chủ đạo, hoặc `theme 3`) |
+| **Màn hình chờ** | cùng cụm logo với màn khởi động (mục 4.10) |
 
 **File logo:**
 - Ảnh gốc độ phân giải cao: `assets/brand/bk-logo.png` (1657×1674, lấy từ
@@ -56,21 +57,24 @@ Thêm logo/ảnh mới: sinh file `.c`, khai báo `LV_IMAGE_DECLARE(ten);` (**c�
 
 ## 4.3 Khung màn hình
 
+Trang Tổng quan:
+
 ```
 y=0    ┌────────────────────────────────────────────┐
-y=16   │ Phòng khách                 09:32  ᯤ  ⏚ AC │  header (cố định)
-       │ Wi-Fi OK · MQTT mất kết nối                 │  dòng trạng thái kết nối
+y=16   │ [BK] Phòng khách            09:32  ᯤ  ⏚ AC │  header (chỉ ở Tổng quan)
+       │      Wi-Fi OK · MQTT mất kết nối            │  dòng trạng thái kết nối
 y=64   ├────────────────────────────────────────────┤
        │                                            │
-       │         vùng nội dung: 4 trang             │  y 64..392 (328 px)
+       │      gauge + 2 thẻ chỉ số                  │  y 64..392 (328 px)
        │                                            │
 y=408  ├────────────────────────────────────────────┤
        │ [⌂ Tổng quan] [⚙ Điều khiển] [⚙ Cài đặt]  │  thanh điều hướng 448×56
 y=464  └────────────────────────────────────────────┘
 ```
 
-Lề 16 px, lưới 8 px, vùng chạm từ 44 px trở lên. Các trang đổi bằng fade 200 ms.
-Header và thanh điều hướng chỉ hiện ở nơi cần (`selectPage()`):
+Lề 16 px, lưới 8 px, vùng chạm từ 44 px trở lên. Các trang đổi **tức thì**,
+không có hiệu ứng mờ (xem 4.1). Header và thanh điều hướng chỉ hiện ở nơi cần
+(`selectPage()`):
 
 | Trang | Header | Thanh điều hướng | Vùng nội dung |
 |---|---|---|---|
@@ -123,8 +127,9 @@ Header và thanh điều hướng chỉ hiện ở nơi cần (`selectPage()`):
   công tắc. Chạm cả hàng để bật/tắt. Icon có màu riêng khi bật: đèn vàng,
   điều hoà xanh dương, ổ cắm xanh lá.
 - **Mỗi thiết bị Tasmota một nhóm:** tiêu đề tên thiết bị và trạng thái bên
-  phải ("Đang kết nối…", IP, hoặc **"Ngoại tuyến"** màu cảnh báo). Mỗi kênh
-  một hàng. Khi thiết bị ngoại tuyến, các hàng mờ 50% và **không bấm được**.
+  phải ("Đang kết nối…", "Trực tuyến", hoặc **"Ngoại tuyến"** màu cảnh báo).
+  Mỗi kênh một hàng. Khi thiết bị ngoại tuyến, các hàng mờ 50% và **không bấm
+  được**. Dữ liệu đi qua web (05-ket-noi.md, mục 5.3), hỏi lại mỗi 1 giây.
 
 ### Cài đặt (cuộn dọc)
 
@@ -135,8 +140,8 @@ Ngoài trang Cài đặt chỉ giữ 8 hàng hay dùng; phần chi tiết nằm 
 | (đầu trang) | thẻ logo BK › | trang Giới thiệu |
 | KẾT NỐI | Wi-Fi: "SSID · RSSI dBm" / "Mất kết nối" › | mở trang Wi-Fi và quét |
 | | Mạng & MQTT: IP / "MQTT lỗi" / "Chờ Wi-Fi" › | trang Mạng & MQTT |
-| MÀN HÌNH | Độ sáng màn hình (slider 10–100%) | xem trước khi kéo, lưu NVS khi thả |
-| | Tự giảm sáng sau 30 giây (công tắc) | lưu NVS |
+| MÀN HÌNH | Độ sáng màn hình (slider 0–100%, đèn thật 50–100%) | xem trước khi kéo, lưu NVS khi thả |
+| | Màn hình chờ sau 2 phút (công tắc) | lưu NVS; xem "Màn hình chờ" bên dưới |
 | | Màu chủ đạo: Lime / Ember / Cobalt / Bách Khoa ● | chạm để đổi vòng, lưu NVS |
 | DỮ LIỆU & HỆ THỐNG | Thẻ nhớ: "Trống x / y GB" / "Không có thẻ" › | trang Thẻ nhớ |
 | | Lịch sử cảm biến: "x giờ" › | biểu đồ 1 giờ / 24 giờ / 7 ngày |
@@ -158,12 +163,14 @@ khi đó quay về trang cha, ví dụ Thẻ nhớ → config.json → ← về 
 | Mạng & MQTT | Wi-Fi: trạng thái, SSID, cường độ sóng (Tốt/Trung bình/Yếu), BSSID, kênh; địa chỉ: IP, gateway, subnet, DNS, MAC, hostname; rồi MQTT: trạng thái kèm mã `PubSubClient::state()` diễn giải tiếng Việt, broker, đăng nhập, client ID, keep-alive, chính sách thử lại, các topic |
 | Hệ thống | bộ nhớ kiểu "instrument", **stream 4 lần/giây**: RAM nội (màu chủ đạo) và PSRAM (tím) đặt cạnh nhau, mỗi loại có tiêu đề màu (kiêm chú thích), đã dùng/tổng và **% cỡ 64 px** (vàng cam khi > 90%); bên dưới là **một biểu đồ 15 giây chung cho cả hai đường**, có trục giá trị 100/75/50/25/0 khớp lưới, mốc "15 GIÂY TRƯỚC → BÂY GIỜ" và chấm điểm mới nhất cho từng đường; Flash: % firmware so với khe OTA trên thanh 24 đoạn |
 | Hệ thống (tiếp) | phân bổ PSRAM, LittleFS; thời gian: đã chạy, giờ hệ thống (sau NTP), múi giờ, lý do khởi động lần này; hàng **Nhật ký sự kiện ›** |
+| Lịch sử cảm biến | chọn 1 giờ / 24 giờ / 7 ngày; ba biểu đồ nhiệt độ, độ ẩm, công suất với giá trị mới nhất và min/max trên trục; vẽ lại mỗi 10 giây (06-the-nho.md, mục 6.11) |
+| Nhật ký sự kiện (trong Hệ thống) | 100 sự kiện mới nhất, mới ở trên, giờ và nội dung; cập nhật khi có sự kiện mới |
 | thẻ Giới thiệu | logo BK, sản phẩm, firmware, ngày build, phần cứng, màn hình, chip, CPU, MAC, ESP-IDF, LVGL |
 
 - **Màu giá trị:** xanh lá = tốt; vàng cam = cần chú ý (mất kết nối, sóng
   yếu, heap thấp, chưa có NTP, reset do watchdog/brownout); thanh % chuyển
   vàng cam khi dùng quá 85%.
-- **Trang Bộ nhớ chạy trực tiếp:** `liveMemory()` trong task `ui` đọc
+- **Trang Hệ thống chạy trực tiếp:** `liveMemory()` trong task `ui` đọc
   `heap_caps_*` **mỗi 250 ms**, sửa chữ/thanh **tại chỗ** (thanh trượt 300 ms)
   và đẩy một điểm vào `lv_chart` (60 điểm = 15 giây, chế độ SHIFT); không dựng
   lại trang. Lúc chụp màn hình, đường PSRAM nhô lên khoảng 5%: đó là bộ đệm
@@ -175,17 +182,20 @@ khi đó quay về trang cha, ví dụ Thẻ nhớ → config.json → ← về 
 
 ### Tệp trên thẻ (trang con của Cài đặt)
 
-Mở từ Cài đặt → THẺ NHỚ → **Tệp trên thẻ ›**.
+Mở từ Cài đặt → **Thẻ nhớ** → **Tệp trên thẻ ›**.
 
 - **Danh sách:** thư mục đứng trước, sắp theo tên; icon theo loại tệp (thư mục,
   văn bản/log, csv, json/bin, ảnh); kích thước tệp; tối đa 32 mục mỗi thư mục.
-- **Thanh trên:** nút ← lên thư mục cha (ở thư mục gốc thì về Cài đặt), tên thư
-  mục và đường dẫn, nút tải lại.
-- **Chạm một tệp** mở trang xem tệp:
+- **Thanh trên:** nút ← lên thư mục cha (ở thư mục gốc thì về trang Thẻ nhớ),
+  tiêu đề là đường dẫn dạng "logs / sensors" ("Tệp trên thẻ" ở thư mục gốc),
+  nút tải lại.
+- **Chạm một tệp** mở trang xem tệp (06-the-nho.md, mục 6.10):
   - đường dẫn và kích thước;
-  - **nội dung** của tệp văn bản (`.txt .log .csv .json .cfg .ini .md .yaml`):
-    cả tệp nếu ≤ 1,5 KB, còn tệp lớn thì **1,5 KB cuối** (chỗ có log mới nhất),
-    bắt đầu từ đầu một dòng;
+  - `.csv`: **bảng** (`lv_table`), 200 dòng mới nhất, dòng tiêu đề tô nền;
+  - `.jpg .jpeg .png .bmp`: **ảnh** thu nhỏ vừa 432 × 432;
+  - tệp văn bản (`.txt .log .json .cfg .ini .md .yaml`): cả tệp nếu ≤ 64 KB,
+    còn tệp lớn thì **64 KB cuối** (chỗ có log mới nhất), bắt đầu từ đầu một
+    dòng, chia nhãn khoảng 1 KB;
   - nút **Xoá tệp**: chạm lần đầu hiện "Chạm lần nữa để xoá" (4 giây), chạm lần
     hai mới xoá. Thư mục chỉ xoá được khi trống. Sau khi xoá, quay về danh sách
     đã làm mới.
@@ -206,7 +216,8 @@ không còn nhảy lên đầu. Chỉ khi **mở** một trang hoặc thư mục
 - **Danh sách mạng:**
   - Mỗi SSID một dòng, trùng tên thì giữ mạng sóng mạnh nhất; tối đa 20 mạng.
   - Icon mức sóng: ≥ -60 dBm đầy, ≥ -72 dBm trung bình, còn lại yếu.
-  - Icon khoá nếu mạng có mật khẩu; nhãn "Đã kết nối" cho mạng hiện tại.
+  - Icon khoá nếu mạng có mật khẩu; nhãn "Đã kết nối" cho mạng hiện tại,
+    "Đã lưu" cho mạng đã có mật khẩu trên panel.
 - **Chạm một mạng sẽ mở màn nhập mật khẩu** (toàn màn hình):
   - ô mật khẩu ẩn ký tự bằng `•`, nút mắt để hiện/ẩn;
   - **bàn phím** (`buildKeyboard()`) kín phần dưới màn hình (y 188–480), gồm
@@ -220,7 +231,10 @@ không còn nhảy lên đầu. Chỉ khi **mở** một trang hoặc thư mục
     - font Be Vietnam Pro, tự lùi về Montserrat 16 cho ký hiệu ⌫ ✓ (`lv_font_t::fallback`);
     - mỗi lần mở lại màn hình thì về chế độ chữ thường;
   - nút **Kết nối** hoặc phím OK để gửi, phím ẩn bàn phím để đóng;
-  - mạng mở thì không hiện bàn phím, ghi "Mạng mở, không cần mật khẩu";
+  - **mạng mở:** không có bàn phím; thẻ "Mạng mở · không cần mật khẩu · dữ liệu
+    không được mã hoá" thế chỗ ô mật khẩu, nút Kết nối rộng hết cột;
+  - **mạng đã lưu mật khẩu** (nhãn "Đã lưu" trong danh sách): thẻ "Đã lưu mật
+    khẩu", nút Kết nối dùng mật khẩu đã lưu, kèm nút "Nhập mật khẩu khác";
   - mật khẩu dưới 8 ký tự bị chặn ngay trên màn hình.
 - **Kết quả kết nối:**
 
@@ -250,11 +264,12 @@ tắt nguồn". Board tự khởi động lại khi xong.
 
 - **Chạm → nhả mới kích hoạt:** nền đổi sang màu nhấn trong 150 ms. Trượt tay
   ra khỏi đối tượng thì huỷ.
-- **Nghiệp vụ là nguồn sự thật duy nhất:** chạm relay chỉ gửi yêu cầu. Công tắc
-  chỉ đổi khi `app` (hoặc `devices` với Tasmota) xác nhận trạng thái mới. Vì vậy
-  màn hình, MQTT và lệnh serial luôn khớp nhau.
-- **Tự giảm sáng:** sau 30 giây không chạm, đèn nền giảm còn 15%. Lần chạm đầu
-  tiên chỉ đánh thức màn hình (bị "nuốt"), không bấm nhầm nút.
+- **Nghiệp vụ là nguồn sự thật duy nhất:** chạm relay trên panel chỉ gửi yêu
+  cầu, công tắc chỉ đổi khi `app` xác nhận. Vì vậy màn hình, MQTT và lệnh
+  serial luôn khớp nhau. Riêng Tasmota (đi qua web, khoảng 0,4 s) thì công tắc
+  đổi ngay, rồi chỉnh theo trạng thái web trả về; lỗi thì trả lại như cũ.
+- **Màn hình chờ:** sau 2 phút không chạm (mục 4.10). Lần chạm đầu tiên chỉ
+  đánh thức màn hình (bị "nuốt"), không bấm nhầm nút.
 - **Không có cảm ứng:** mọi phần tử bấm được nằm trong `lv_group` mặc định, có
   viền focus 2 px. Định nghĩa `HMI_BTN_PREV_PIN`, `HMI_BTN_NEXT_PIN`,
   `HMI_BTN_OK_PIN` trong `config.h` để dùng nút vật lý (board này không còn
@@ -284,9 +299,10 @@ Mỗi bộ có màu chữ ký riêng, dùng cho vòng cung, công tắc bật, s
 | **Bách Khoa** | `#1488DB` | `#A78BFA` | `#5AC8FA` | `#FFC94D` | `#3DDC97` | `#FF9F1C` | `#FF4D5E` |
 
 - **Cảnh báo luôn khác sắc với màu chữ ký,** vì vậy Ember dùng vàng cho cảnh báo.
-- **Đổi bộ màu:** Cài đặt → Màu chủ đạo, hoặc lệnh `theme 0|1|2|3`. Task `ui` dựng
-  lại toàn bộ widget (`lv_obj_clean` rồi build lại). Dữ liệu nằm trong model
-  nên không mất.
+- **Đổi bộ màu:** Cài đặt → Màu chủ đạo, hoặc lệnh `theme 0|1|2|3` (lệnh serial
+  không lưu NVS). Task `ui` dựng lại toàn bộ widget (`lv_obj_clean` rồi build
+  lại). Dữ liệu nằm trong model nên không mất; vị trí cuộn và trang chi tiết
+  đang mở được giữ nguyên.
 - **Thêm bộ màu:** thêm một dòng vào `kPalettes` (`src/hmi/hmi_theme.cpp`) và
   tăng `kPaletteCount` (`hmi_theme.h`).
 
@@ -328,11 +344,15 @@ bash tools/gen_lvgl_fonts.sh
 2. Thêm codepoint vào `ICONS20` (hoặc `ICONS14`) trong `tools/gen_lvgl_fonts.sh`, rồi chạy script.
 3. Thêm `#define ICON_TEN "\uEXXX"` vào `src/hmi/hmi_theme.h`.
 
-Icon đang có: wifi, wifi-off, wifi-high, wifi-low, plug, droplet, zap, house,
-sliders, settings, lightbulb, snowflake, plug-zap, sun, clock, memory-stick,
-server, globe, info, triangle-alert, circle-x, thermometer, palette,
-chevron-right, lock, refresh-cw, arrow-left, eye, eye-off, download,
-hard-drive, file-text, circle-check.
+Icon đang có (tên macro trong `src/hmi/hmi_theme.h`): `ICON_WIFI`,
+`ICON_WIFI_OFF`, `ICON_WIFI_LOW`, `ICON_WIFI_HIGH`, `ICON_PLUG`, `ICON_PLUG_ZAP`,
+`ICON_DROPLET`, `ICON_ZAP`, `ICON_HOUSE`, `ICON_SLIDERS`, `ICON_SETTINGS`,
+`ICON_BULB`, `ICON_SNOWFLAKE`, `ICON_SUN`, `ICON_CLOCK`, `ICON_MEMORY`,
+`ICON_SERVER`, `ICON_GLOBE`, `ICON_INFO`, `ICON_ALERT`, `ICON_ERROR`,
+`ICON_THERMO`, `ICON_PALETTE`, `ICON_CHEVRON`, `ICON_LOCK`, `ICON_REFRESH`,
+`ICON_BACK`, `ICON_EYE`, `ICON_EYE_OFF`, `ICON_DOWNLOAD`, `ICON_DRIVE`,
+`ICON_FILE`, `ICON_FILE_PLAIN`, `ICON_FILE_IMAGE`, `ICON_FILE_CODE`,
+`ICON_FILE_SHEET`, `ICON_FOLDER`, `ICON_FOLDER_TREE`, `ICON_TRASH`, `ICON_CHECK`.
 
 ## 4.8 API của HMI (`include/hmi.h`)
 
@@ -347,12 +367,15 @@ Gọi được từ **bất kỳ task nào** (có khoá, chi phí thấp):
 | `setBrightness(pct)` / `setAutoDim(on)` / `setTheme(i)` / `setRoomName(s)` | cài đặt |
 | `setWifiNetworks(list, n)` / `setWifiScanning(b)` / `setWifiJoin(state, msg)` | trang Wi-Fi |
 | `setStorage(info)` / `setUpdateProgress(pct)` (-1 = ẩn) | thẻ nhớ, cập nhật |
-| `showPage(n)` / `scrollPage(dy)` | chuyển trang (0..3), cuộn (gửi request vào queue) |
-| `screenshot(Print&)` / `screenshotBmp(Print&)` | chụp màn hình (task gọi tự gửi dữ liệu đi) |
+| `setFileList(list)` / `setFileView(view, text, pixels)` | trình duyệt và trình xem tệp (văn bản, ảnh chép vào PSRAM) |
+| `showPage(n)` / `showDetail(topic)` / `scrollPage(dy)` | chuyển trang (0..6), mở trang chi tiết (0..8), cuộn (gửi request vào queue) |
+| `previewFile(path)` / `previewKeyboard(open)` | mở trình xem tệp / màn nhập mật khẩu (dùng cho lệnh serial) |
+| `benchmark(policy)` / `injectDrag(x, y0, y1, ms)` | đo tốc độ vẽ / chạm giả lập |
+| `screenshot(Print&)` / `screenshotFramebuffer(Print&, ms)` / `screenshotBmp(Print&)` | chụp màn hình bằng LVGL / từ framebuffer thật / BMP (task gọi tự gửi dữ liệu đi) |
 
 Callback (chạy trong task `ui`, **chỉ được post**): `relayToggle`,
 `brightnessChanged`, `autoDimChanged`, `themeChanged`, `backlight`, `wifiScan`,
-`wifiJoin`, `firmwareUpdate`, `deviceToggle`.
+`wifiJoin`, `firmwareUpdate`, `deviceToggle`, `fileList`, `fileRead`, `fileDelete`.
 
 ## 4.9 Thêm một màn hình mới
 
@@ -365,3 +388,20 @@ Callback (chạy trong task `ui`, **chỉ được post**): `relayToggle`,
    một setter có `ModelLock` (`hmi_model.cpp`), và `applyXxx()` gọi trong `tick()`.
 5. Hành động của người dùng: thêm callback vào `Callbacks` (`hmi.h`). Trong
    `main.cpp`, callback chỉ post vào queue của task phụ trách.
+
+## 4.10 Màn hình chờ
+
+Khi bật "Màn hình chờ sau 2 phút" và không có thao tác nào trong 2 phút
+(`HMI_DIM_AFTER_MS` = 120000):
+
+- Đèn nền giảm về mức sàn (`HMI_DIM_BRIGHTNESS_PCT`).
+- Hiện cụm nhận diện Bách Khoa trên nền đen: logo, "ĐẠI HỌC QUỐC GIA TP.HCM",
+  "TRƯỜNG ĐẠI HỌC BÁCH KHOA", vạch xanh BK, "Smart Home Panel". Đây là cùng
+  cụm `brandLockup()` của màn hình khởi động.
+- Cụm logo nằm chính giữa; mỗi phút chỉ dịch tối đa 4 px (mắt không thấy)
+  để không điểm ảnh nào hiển thị một hình hàng giờ. Dịch 36 px như bản đầu
+  trông như lỗi bố cục.
+- Chạm lần đầu chỉ đánh thức (bị nuốt, không bấm nhầm nút bên dưới), rồi
+  trở lại trang đang mở.
+- Không hiện khi đang cập nhật firmware (`updatePct >= 0`).
+

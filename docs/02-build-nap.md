@@ -19,6 +19,14 @@ ngay ở bước tạo `bootloader.bin`. Sửa bằng cách cài vào penv của
 ~/.platformio/penv/Scripts/python -m pip install intelhex
 ```
 
+**`pio.exe: No such file or directory`** (21/10/2026): extension PlatformIO của
+VS Code đang cài lại `~/.platformio/penv`. Dùng PlatformIO của Python hệ thống,
+cùng bộ package trong `~/.platformio`:
+
+```bash
+python -m platformio run -t upload --upload-port COM4
+```
+
 ## 2.2 `platformio.ini`: các dòng bắt buộc và lý do
 
 ```ini
@@ -85,11 +93,14 @@ python -c "print(hex(open('.pio/build/esp32-4848s040/bootloader.bin','rb').read(
 
 - USB-C → CH340 → **UART0** (TX 43 / RX 44), 115200 baud.
 - Windows hiện tên `USB-SERIAL CH340 (COMx)`. **Số COM đổi theo cổng USB:**
-  board từng là COM4, sau khi cắm sang cổng khác thành **COM18**.
+  board từng là COM4, có lúc thành **COM18**; hiện là **COM4**. COM5 / COM6 trên
+  máy này là cổng Bluetooth, không phải board.
+- Cổng biến mất giữa lúc nạp (`Could not open COM4 … doesn't exist`): cáp hoặc
+  cổng USB lỏng. Cắm lại, dùng cáp có dữ liệu, cắm thẳng vào máy.
 - Xác định đúng board bằng MAC:
 
 ```bash
-python ~/.platformio/packages/tool-esptoolpy@1.40501.0/esptool.py --port COM18 --chip esp32s3 read_mac
+python ~/.platformio/packages/tool-esptoolpy@1.40501.0/esptool.py --port COM4 --chip esp32s3 read_mac
 # MAC: 98:3d:ae:e1:8b:bc
 ```
 
@@ -101,20 +112,22 @@ python ~/.platformio/packages/tool-esptoolpy@1.40501.0/esptool.py --port COM18 -
 ## 2.5 Lệnh
 
 ```bash
-pio run                                  # build (~4-8 phút trên máy này)
-pio run -t upload --upload-port COM18    # build + nạp
-pio device monitor -p COM18 -b 115200    # xem log; gõ lệnh console (07-go-loi.md)
+pio run                                  # build (~1-2 phút; build lại toàn bộ ~2-4 phút)
+pio run -t upload --upload-port COM4     # build + nạp
+pio device monitor -p COM4 -b 115200     # xem log; gõ lệnh console (07-go-loi.md)
 pio run -t clean
 ```
 
+- Build nhanh nhờ `lib_ldf_mode = chain` (trước là `chain+`, mỗi lần build mất
+  khoảng 10 phút; 08-nhat-ky.md, mục 24).
 - Không cần `pio run -t uploadfs`: font và icon đã biên dịch vào firmware.
-- Phân vùng SPIFFS hiện không dùng.
+  Phân vùng `spiffs` được firmware tự format thành LittleFS lần đầu chạy.
 
 ## 2.6 Cập nhật không cần dây
 
 | Cách | Trạng thái |
 |---|---|
-| **Thẻ nhớ**: chép `firmware.bin` vào thẻ, rồi vào Cài đặt → Cập nhật firmware → chạm 2 lần | Đã cài đặt, chưa thử (xem 06-the-nho.md) |
+| **Thẻ nhớ**: chép `firmware.bin` vào thẻ, rồi vào Cài đặt → Thẻ nhớ → Cập nhật firmware → chạm 2 lần. Firmware đang chạy được sao lưu vào `/backup` trước (`sd restore` để quay lại) | Đã cài đặt, chưa thử (xem 06-the-nho.md) |
 | **ArduinoOTA** qua Wi-Fi: `pio run -t upload -e esp32-4848s040-ota` (sửa `upload_port` = IP panel, mật khẩu `OTA_PASSWORD`) | Đã cài đặt, chạy khi có Wi-Fi, chưa thử |
 | MQTT OTA / web `/update` | **Chưa cài đặt** (README cũ có nhắc nhưng code không có) |
 
@@ -124,7 +137,7 @@ pio run -t clean
 
 | | Dùng |
 |---|---|
-| Flash (app) | 1,31 MB / 6,4 MB (19,9%) |
-| RAM tĩnh | 65 KB / 320 KB (19,9%) |
-| Heap trống khi chạy | 67–86 KB (thấp nhất 60 KB) |
-| PSRAM trống | ~7,6 MB / 8 MB (framebuffer RGB 450 KB nằm ở đây) |
+| Flash (app) | 1,77 MB / 6,4 MB (khoảng 27%) |
+| RAM tĩnh | 61 KB / 320 KB (18,6%) |
+| RAM nội trống khi chạy | khoảng 133 KB; khoảng 80–90 KB khi kết nối HTTPS tới web Tasmota đang mở (bộ đệm TLS) |
+| PSRAM trống | ~7,3 MB / 8 MB (framebuffer 450 KB, widget LVGL, lịch sử, nhật ký, trình xem tệp) |

@@ -39,6 +39,8 @@ struct Config {
     char mqttPass[64] = "";
     char room[32] = "";
     uint8_t tasmotaCount = 0;  // 0 = use the config.h devices
+    bool hasTasmotaApi = false;  // "tasmotaApi" present (may be "" to disable the gateway)
+    char tasmotaApi[128] = "";
     hmi::DeviceInfo tasmota[hmi::kMaxDevices] = {};
 };
 

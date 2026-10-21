@@ -9,6 +9,11 @@
 
 Trùng SSID thì chỉ giữ lần xuất hiện đầu. Tối đa 6 mạng.
 
+**Mạng mở:** `connectTo()` không gửi mật khẩu cho SSID mà lần quét gần nhất
+thấy là mạng mở (`isOpen()`). Gửi mật khẩu đã lưu cho một router mở thì ESP32
+chỉ chấp nhận AP có mã hoá và router không bao giờ trả lời (`AUTH_EXPIRE`).
+Đây là lỗi đã gặp khi RD-SEAI_2.4G bỏ mật khẩu mà `config.h` vẫn giữ mật khẩu cũ.
+
 ### Cài đặt radio
 | Cài đặt | Lý do |
 |---|---|
@@ -26,13 +31,25 @@ ngắt kết nối, chờ 5 s → 10 s → 20 s → 40 s → 60 s (tối đa) �
 Khi mất kết nối, board thử lại ngay rồi giãn dần như trên. Log:
 `WiFi: trying <ssid>`, `WiFi: not connected, next try in 10s`.
 
-### Quét (từ trang Wi-Fi hoặc lệnh `wifi`)
-- Quét không chặn (`WiFi.scanNetworks(true)`), kết quả lấy trong `loop()`.
+### Quét (lúc khởi động, từ trang Wi-Fi hoặc lệnh `wifi`)
+- **Lúc khởi động** quét đồng bộ một lần (khoảng 2 s) trước lần kết nối đầu,
+  để biết mạng nào đang mở. Log in mọi mạng panel nghe được, kèm RSSI tại chỗ
+  đặt panel:
+  ```
+  WiFi:    -57 dBm ch1  WPA  RFThings VietNam
+  WiFi:    -77 dBm ch1  open RD-SEAI_2.4G
+  ```
+- Các lần sau quét không chặn (`WiFi.scanNetworks(true)`), kết quả lấy trong `loop()`.
+- Không dùng `WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN)` / `setSortMethod()`:
+  trên Arduino-ESP32 2.0.17 chúng làm lần quét bất đồng bộ không bao giờ xong.
 - Đang chưa kết nối thì ngắt lần thử dở dang trước khi quét, vì lần thử đó
   làm quét thất bại. Trong lúc quét không thử kết nối.
 - Bỏ SSID ẩn, gộp SSID trùng (giữ mạng mạnh nhất), tối đa 20 mạng.
 
 ### Kết nối do người dùng chọn
+- Mạng đã lưu mật khẩu hiện nhãn "Đã lưu"; nút Kết nối gửi `wifimgr::kUseSaved`
+  thay cho mật khẩu, Wi-Fi manager tự lấy mật khẩu đã lưu (không áp dụng cho
+  mạng mở). Lệnh serial tương đương: `wifi join <ssid>`.
 - Timeout 15 giây. Gặp lỗi chắc chắn (`AUTH_FAIL`, handshake timeout,
   `NO_AP_FOUND`) thì báo ngay sau 3 giây.
 - **Thành công:**
@@ -52,11 +69,14 @@ Khi mất kết nối, board thử lại ngay rồi giãn dần như trên. Log:
 | 202 | AUTH_FAIL | sai mật khẩu, hoặc xác thực thất bại |
 
 ### Vấn đề còn tồn tại
-Board thu sóng rất yếu (xem [01-phan-cung.md](01-phan-cung.md) mục 1.4). Lần
-lượt đã quan sát:
-- kết nối ngay lúc boot, RSSI -77;
-- `AUTH_EXPIRE` liên tục trong 3 phút (khi còn auto-reconnect);
-- `NO_AP_FOUND` sau khi đổi vị trí.
+Board thu sóng yếu hơn laptop nhiều (xem [01-phan-cung.md](01-phan-cung.md) mục 1.4):
+- RD-SEAI_2.4G: laptop 91% (khoảng -45 dBm), panel **-77 dBm**, lại cùng kênh 1
+  với RFThings (-57 dBm). Panel luôn nhận `AUTH_EXPIRE`, kể cả khi bỏ mật khẩu,
+  chỉ định đúng BSSID, đổi MAC hoặc chỉ dùng 802.11b (08-nhat-ky.md, mục 33).
+  Cách xử lý: đặt panel gần router hơn, hoặc dùng mạng panel bắt tốt.
+- Điều khiển Tasmota không còn phụ thuộc vào mạng này, vì đi qua web (mục 5.3).
+- Lệnh chẩn đoán: `devices` (Wi-Fi, IP, RSSI), `wifi join <ssid>`,
+  `wifi bssid <aa:bb:cc:dd:ee:ff> <kênh> <ssid>`, `wifi mac <ssid>`, `wifi 11b <ssid>`.
 
 ## 5.2 MQTT (task `net`)
 
@@ -106,52 +126,57 @@ Payload đầu tiên tắt giả lập vĩnh viễn (đến lần khởi động
 }
 ```
 
-## 5.3 Tasmota (`src/tasmota.cpp`, task `devices`)
+## 5.3 Tasmota qua web (`src/tasmota.cpp`, task `devices`)
 
-Điều khiển qua **HTTP API của Tasmota**, không cần broker MQTT.
+Panel **không gọi thẳng IP thiết bị** nữa. Mọi lệnh đi qua web
+`https://smarthome.blong.id.vn/api/tasmota` (`web/src/app/api/tasmota/route.ts`).
+Máy chủ web nằm cùng mạng với thiết bị, nên panel chỉ cần có Internet: vào
+Wi-Fi nào cũng được (ví dụ RFThings), không cần cùng mạng RD-SEAI với thiết bị.
 
 | Thao tác | Request | Trả về |
 |---|---|---|
-| Đọc trạng thái | `GET http://<host>/cm?cmnd=Power0` | `{"POWER1":"OFF","POWER2":"ON",...}` |
-| Bật/tắt kênh n | `GET http://<host>/cm?cmnd=Power<n>%20TOGGLE` | `{"POWER<n>":"ON"}` |
-
-Thiết bị chỉ có 1 relay trả về `"POWER"` thay vì `"POWER1"`; code xử lý cả hai.
+| Đọc trạng thái (cả 2 thiết bị) | `GET <api>` | `{"states":{"primary":{"power1":true,…},"secondary":{…}}}` (`null` nếu web không tới được thiết bị) |
+| Bật/tắt kênh n | `POST <api>` `{"device":"primary","channel":n,"action":"toggle"}` | `{"device":"primary","states":{…}}` |
 
 | Thông số | Giá trị |
 |---|---|
-| Hỏi trạng thái | mỗi 3 s (`TASMOTA_POLL_MS`), mỗi lượt chỉ 1 request để lệnh bật/tắt được xử lý trước |
-| Timeout HTTP | 1,5 s (kết nối + đọc) |
-| Thiết bị không phản hồi | đánh dấu ngoại tuyến, thử lại mỗi 15 s |
-| Log thẻ nhớ | `Tasmota <tên> (<ip>) online/offline`, `Tasmota <tên> ch<n> ON/OFF` |
+| Hỏi trạng thái | mỗi 1 s (`TASMOTA_POLL_MS`), một request lấy cả 2 thiết bị; thay đổi hiện lên panel trong khoảng 1–1,5 s |
+| Kết nối | HTTPS qua Cloudflare, giữ một kết nối TLS để dùng lại (khoảng 0,4 s/request; mở kết nối mới mất khoảng 3 s) |
+| Client HTTP | tự viết trên `WiFiClientSecure`, đọc trọn body chunked/`Content-Length`. `HTTPClient` của Arduino bỏ sót phần kết thúc của body chunked, nên request kế tiếp trên kết nối dùng lại bị treo tới hết timeout (đo được 6–9 s) |
+| Kết nối chết | chờ dòng trạng thái tối đa 2 s, rồi gửi lại trên kết nối mới |
+| Ngoại tuyến | sau 3 lần hỏi lỗi liên tiếp (giữ trạng thái cũ khi mạng chập chờn) |
+| Bật/tắt | công tắc đổi ngay (lạc quan), rồi chỉnh theo trạng thái web trả về; lỗi thì trả lại như cũ |
+| Bảo mật | `setInsecure()`: không kiểm tra chứng chỉ (API chỉ bật/tắt relay) |
+| RAM | bộ đệm TLS khoảng 60 KB RAM nội (RAM nội trống còn khoảng 80–90 KB) |
 
-### Thiết bị hiện có (người dùng cung cấp)
-| Thiết bị | IP | Kênh | Ghi chú |
-|---|---|---|---|
-| Sonoff M5-3C | 172.28.182.3 | 3 (web UI có thêm T4) | **không phản hồi**, cả từ máy tính (13/10/2026) |
-| TX Ultimate 4C-120 | 172.28.182.4 | 4 (+ `POWER5` = T5) | máy tính đọc được: Tasmota 15.5.0.2, `POWER1..4` OFF, `POWER5` ON |
-
-`POWER5`/T5 (thường là đèn viền/LED của công tắc cảm ứng) cố ý không hiển
-thị. Muốn hiện thì đặt `channels: 5`.
+### Thiết bị
+| Thiết bị | Tên trên web (`key`) | Kênh |
+|---|---|---|
+| Sonoff M5-3C | `primary` | 3 |
+| TX Ultimate 4C-120 | `secondary` | 4 |
 
 ### Cấu hình
-- **Mặc định** trong `config.h`: `TASMOTA_1_*`, `TASMOTA_2_*`.
-- **Ghi đè** bằng `/config.json` (tối đa 4 thiết bị, mỗi thiết bị tối đa 8 kênh):
+- **Mặc định** trong `config.h`: `TASMOTA_API_URL`, `TASMOTA_1_*`, `TASMOTA_2_*`.
+- **Ghi đè** bằng `/config.json`:
 
 ```json
+"tasmotaApi": "https://smarthome.blong.id.vn/api/tasmota",
 "tasmota": [
-  {"name": "Sonoff M5-3C", "host": "172.28.182.3", "channels": 3,
+  {"name": "Sonoff M5-3C", "key": "primary", "channels": 3,
    "labels": ["Đèn trần", "Quạt", "Ổ cắm"]},
-  {"name": "TX Ultimate 4C", "host": "172.28.182.4", "channels": 4}
+  {"name": "TX Ultimate 4C", "key": "secondary", "channels": 4}
 ]
 ```
 
-`labels` để trống thì hiện "Kênh 1", "Kênh 2"… Tên thiết bị nên viết bằng chữ
-ASCII, vì tiêu đề nhóm được in hoa bằng `toupper()`.
+Không ghi `key` thì thiết bị thứ nhất là `primary`, thứ hai là `secondary`.
+`labels` để trống thì hiện "Kênh 1", "Kênh 2"…
 
-Lệnh serial `devices` in trạng thái:
+Lệnh serial `devices`:
 ```
-  Sonoff M5-3C     172.28.182.3    OFFLINE mask=0x00
-  TX Ultimate 4C   172.28.182.4    online  mask=0x00
+  gateway: https://smarthome.blong.id.vn/api/tasmota
+  Wi-Fi RFThings VietNam  IP 192.168.130.171  RSSI -73 dBm
+  Sonoff M5-3C     primary    online  mask=0x07  ok 5 fail 0  last err 0  last 391 ms
+  TX Ultimate 4C   secondary  online  mask=0x00  ok 5 fail 0  last err 0  last 391 ms
 ```
 
 ## 5.4 NTP

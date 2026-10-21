@@ -788,13 +788,13 @@ bool loadConfig(Config& out) {
     strlcpy(out.mqttUser, doc["mqtt"]["user"] | "", sizeof(out.mqttUser));
     strlcpy(out.mqttPass, doc["mqtt"]["password"] | "", sizeof(out.mqttPass));
     strlcpy(out.room, doc["room"] | "", sizeof(out.room));
+    static const char* const kDefaultKeys[] = {"primary", "secondary", "third", "fourth"};
     for (JsonObject t : doc["tasmota"].as<JsonArray>()) {
         if (out.tasmotaCount >= hmi::kMaxDevices) break;
-        const char* host = t["host"] | "";
-        if (!host[0]) continue;
+        const char* key = t["key"] | kDefaultKeys[out.tasmotaCount];  // gateway device name
         hmi::DeviceInfo& d = out.tasmota[out.tasmotaCount++];
-        strlcpy(d.name, t["name"] | host, sizeof(d.name));
-        strlcpy(d.host, host, sizeof(d.host));
+        strlcpy(d.name, t["name"] | key, sizeof(d.name));
+        strlcpy(d.key, key, sizeof(d.key));
         d.channels = constrain(t["channels"] | 1, 1, (int)hmi::kMaxChannels);
         uint8_t c = 0;
         for (const char* l : t["labels"].as<JsonArray>()) {
@@ -807,6 +807,10 @@ bool loadConfig(Config& out) {
     s_cfgWifi = out.wifiCount;
     if (out.mqttHost[0]) snprintf(s_cfgMqtt, sizeof(s_cfgMqtt), "%s:%u", out.mqttHost, out.mqttPort ? out.mqttPort : 1883);
     s_cfgTasmota = out.tasmotaCount;
+    if (!doc["tasmotaApi"].isNull()) {
+        out.hasTasmotaApi = true;
+        strlcpy(out.tasmotaApi, doc["tasmotaApi"] | "", sizeof(out.tasmotaApi));
+    }
     logEvent("config.json loaded from %s: %u Wi-Fi, mqtt=%s", s_configSource == 1 ? "SD" : "flash", out.wifiCount,
              out.mqttHost[0] ? out.mqttHost : "-");
     return true;

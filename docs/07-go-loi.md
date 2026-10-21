@@ -2,30 +2,56 @@
 
 ## 7.1 Lệnh serial (115200 baud, mỗi lệnh kết thúc bằng Enter)
 
+**Hệ thống**
+
 | Lệnh | Tác dụng |
 |---|---|
 | `tasks` / `info` | heap, PSRAM trống, stack còn trống và ưu tiên của từng task |
-| `toggle 1` .. `toggle 3` | bật/tắt relay trên panel |
-| `page 0` .. `page 3` | chuyển trang: Tổng quan / Điều khiển / Cài đặt / Wi-Fi |
-| `scroll <px>` | cuộn trang hiện tại bằng API (dương = xuống), **không** đi qua đường cảm ứng |
+| `bench [psram\|hybrid]` | dựng lại UI và đo thời gian vẽ lại toàn màn hình (vẽ + flush) |
+
+**Giao diện**
+
+| Lệnh | Tác dụng |
+|---|---|
+| `page 0` .. `page 6` | chuyển trang: Tổng quan / Điều khiển / Cài đặt / Wi-Fi / trang chi tiết / Tệp trên thẻ / xem tệp |
+| `detail 0` .. `detail 8` | mở trang chi tiết: Mạng & MQTT (0, 1), Hệ thống (2), Thời gian chạy (3), Thẻ nhớ (4), config.json (5), Giới thiệu (6), Lịch sử cảm biến (7), Nhật ký sự kiện (8) |
+| `scroll <px>` | cuộn trang hiện tại bằng API (dương = xuống), **không** đi qua đường cảm ứng; không dùng cho trang chi tiết (cuộn cả khung) |
 | `drag x y y 40` | chạm (tap) tại (x, y), đi qua đường cảm ứng thật |
 | `drag x y0 y1 [ms]` | giả lập một lần vuốt dọc qua **đúng đường xử lý cảm ứng** của LVGL (hit-test, kéo, quán tính), ví dụ `drag 240 380 120 300` |
-| `wifi` | mở trang Wi-Fi và quét |
-| `detail 0` .. `detail 6` | mở thẳng trang chi tiết: Mạng, MQTT, Bộ nhớ, Thời gian chạy, Thẻ nhớ, config.json, Giới thiệu |
-| `kbd` | mở màn nhập mật khẩu cho một mạng giả (để kiểm tra bàn phím) |
-| `devices` | trạng thái các thiết bị Tasmota |
+| `kbd` / `kbd open` | mở màn nhập mật khẩu cho một mạng giả có mật khẩu / mạng mở |
+| `view <đường dẫn>` | mở tệp trên thẻ trong trình xem (bảng CSV, ảnh, văn bản) |
 | `theme 0` .. `theme 3` | đổi bộ màu Lime / Ember / Cobalt / Bách Khoa (không lưu) |
 | `sensor ok\|warn\|error\|loading\|stale` | xem trước các trạng thái của gauge (tắt giả lập) |
 | `sensor sim` | bật lại giả lập cảm biến |
-| `shot` | gửi ảnh màn hình qua serial (dùng với `tools/screenshot.py`) |
+| `toggle 1` .. `toggle 3` | bật/tắt relay trên panel |
+
+**Chụp màn hình**
+
+| Lệnh | Tác dụng |
+|---|---|
+| `shot` | gửi ảnh màn hình (vẽ lại bằng LVGL) qua serial, dùng với `tools/screenshot.py` |
+| `shot fb [ms]` | chụp **framebuffer thật** sau `ms` mili giây (thấy được xé hình, rác hình lúc chuyển cảnh) |
 | `shot sd` | lưu ảnh BMP vào thẻ nhớ |
-| `shot fb [ms]` | chụp **framebuffer thật** sau `ms` mili giây (thấy được xé hình, rác hình lúc chuyển cảnh). Ví dụ `python tools/screenshot.py COM4 fb.png "kbd;shot fb 60"` |
+
+**Mạng và thiết bị**
+
+| Lệnh | Tác dụng |
+|---|---|
+| `wifi` | mở trang Wi-Fi và quét |
+| `wifi join <ssid>` | kết nối mạng đã lưu mật khẩu (mạng mở thì không gửi mật khẩu) |
+| `wifi bssid <aa:bb:cc:dd:ee:ff> <kênh> <ssid>` | chẩn đoán: kết nối thẳng một AP, in MAC của panel |
+| `wifi mac <ssid>` | chẩn đoán: đổi sang MAC khác (tới khi khởi động lại) rồi kết nối |
+| `wifi 11b <ssid>` | chẩn đoán: chỉ dùng 802.11b (tới khi khởi động lại) rồi kết nối |
+| `devices` | Wi-Fi/IP/RSSI của panel, URL web, trạng thái và thống kê từng thiết bị Tasmota |
+
+**Thẻ nhớ và dữ liệu**
+
+| Lệnh | Tác dụng |
+|---|---|
 | `sd tree` | in toàn bộ cây thư mục trên thẻ kèm dung lượng tệp |
-| `sd restore` | cài lại firmware trong `/backup/firmware-prev.bin` |
-| `view <đường dẫn>` | mở tệp trên thẻ trong trình xem (bảng CSV, ảnh, văn bản) |
-| `history save` | lưu lịch sử cảm biến ra thẻ và flash ngay |
 | `sd wipe` | **xóa sạch thẻ** (mọi tệp và thư mục), rồi tạo lại `/logs/sensors`; thư viện SD không format được FAT nên đây là cách thay thế |
-| `bench [psram\|hybrid]` | dựng lại UI và đo thời gian vẽ lại toàn màn hình (vẽ + flush) |
+| `sd restore` | cài lại firmware trong `/backup/firmware-prev.bin` |
+| `history save` | lưu lịch sử cảm biến ra thẻ và flash ngay |
 
 Lệnh không hợp lệ in ra `? <lệnh>`.
 
@@ -33,15 +59,18 @@ Lệnh không hợp lệ in ra `? <lệnh>`.
 
 ```bash
 pip install pyserial pillow
-python tools/screenshot.py COM18 shot.png      # đóng serial monitor trước
+python tools/screenshot.py COM4 shot.png                     # đóng serial monitor trước
+python tools/screenshot.py COM4 fb.png "kbd;shot fb 60"      # gửi kèm chuỗi lệnh (cách nhau bằng ;)
 ```
+
+Không có Pillow thì tool lưu `.ppm`. Ảnh trong `docs/images/` được chụp theo cách này.
 
 Ảnh bị thiếu điểm (log chen vào giữa một dòng dữ liệu) thì tool tự thử lại tối đa 3 lần.
 
 - **Giao thức:** firmware trả `SHOT 480 480`, rồi các dòng `#<base64>` chứa
   các bản ghi RLE (u16 số điểm ảnh liên tiếp, u16 màu RGB565 đã đảo byte), rồi
   `END`.
-- **Vì sao dùng base64 theo dòng:** với 6 task cùng in log, dữ liệu nhị phân
+- **Vì sao dùng base64 theo dòng:** với nhiều task cùng in log, dữ liệu nhị phân
   liền mạch sẽ bị log chen vào giữa và hỏng ảnh. Mỗi dòng base64 được ghi bằng
   một lệnh `write`, nên log chỉ chen được vào giữa các dòng, và tool bỏ qua mọi
   dòng không bắt đầu bằng `#`.
@@ -56,7 +85,11 @@ python tools/screenshot.py COM18 shot.png      # đóng serial monitor trước
 | `SD: mounted at 20000000 Hz, 1892 MB` / `SD: no card` | trạng thái thẻ nhớ |
 | `SD: free-space scan took 267 ms` | lần quét FAT chậm (> 200 ms), bình thường với thẻ lớn |
 | `[event] ...` | sự kiện, cũng được ghi vào `events.log` |
-| `WiFi: trying X` / `not connected, next try in Ns` | Wi-Fi manager đang giãn cách thử lại |
+| `WiFi:    -77 dBm ch1  open RD-SEAI_2.4G` | danh sách mạng quét lúc khởi động, RSSI tại chỗ đặt panel |
+| `WiFi: trying X` / `WiFi: begin X (open, no password)` / `not connected, next try in Ns` | Wi-Fi manager đang kết nối / giãn cách thử lại |
+| `Tasmota: 2 device(s) via https://…` | chế độ điều khiển Tasmota qua web |
+| `history: saved to SD in 209 ms` / `history: restored (seq N)` | lưu / nạp lịch sử cảm biến |
+| `image: <tệp> 480x480 -> 432x432 in 668 ms` | giải mã ảnh cho trình xem tệp |
 | `_eventCallback(): Reason: N - ...` | lý do Wi-Fi ngắt (bảng ở 05-ket-noi.md) |
 | `connect(): select returned due to timeout 1000 ms` + `MQTT connect failed rc=-2` | không tới được broker MQTT |
 | `TOUCH DOWN X=.. Y=..` / `TOUCH UP` | mỗi lần chạm, dùng để kiểm tra cảm ứng |
@@ -98,17 +131,23 @@ lại được sau khi board đã tự khởi động lại.
 | Lỗi biên dịch `abstract type DataWrapperT<SPIFFSFS>` | (UI LovyanGFX cũ) `#include <SPIFFS.h>` phải đứng trước LovyanGFX |
 | `NO_AP_FOUND` dù laptop thấy mạng | board thu sóng kém. Đặt gần router, không che anten |
 | `AUTH_EXPIRE` lặp mỗi giây | auto-reconnect quá dồn dập. Đã tắt, giờ thử lại có giãn cách |
+| `AUTH_EXPIRE` với một mạng cụ thể | gửi mật khẩu cho mạng mở (đã sửa: quét lúc khởi động), hoặc router không nghe được panel (RSSI tại panel ≤ -75 dBm). Xem danh sách quét lúc khởi động |
+| Rác hình / bàn phím lặp lại mỗi 64 px khi chuyển cảnh | hiệu ứng `opa`/fade trên đối tượng lớn nền đặc (04-giao-dien-hmi.md, mục 4.1). Kiểm tra bằng `shot fb <ms>` |
+| Kéo thanh độ sáng không có tác dụng | GPIO38 bị `pinMode`/`digitalWrite` sau `display.begin()`, tách khỏi PWM (08-nhat-ky.md, mục 24) |
+| Tasmota cập nhật chậm, log `read Timeout` | `HTTPClient` dùng lại kết nối với body chunked; đã thay bằng client riêng (05-ket-noi.md, mục 5.3) |
+| `pio.exe: No such file or directory` | PlatformIO trong `~/.platformio/penv` đang được VS Code cài lại; dùng `python -m platformio run …` |
+| COM4 biến mất giữa lúc nạp | cáp/cổng USB lỏng: cắm lại, đổi cáp có dữ liệu, cắm thẳng vào máy |
 | `MQTT connect failed rc=-2` | broker sai địa chỉ hoặc không tới được. Sửa `MQTT_BROKER` hoặc `config.json` |
-| Tasmota "Ngoại tuyến" | thiết bị tắt, sai IP, hoặc khác mạng. Thử `curl http://<ip>/cm?cmnd=Power0` từ máy tính |
+| Tasmota "Ngoại tuyến" | panel không có Internet, web lỗi, hoặc web không tới được thiết bị (`null` trong `states`). Thử `curl https://smarthome.blong.id.vn/api/tasmota`, xem `devices` |
 | Cài đặt → Thẻ nhớ "Không có thẻ" dù đã cắm | thẻ không phải FAT/FAT32, tiếp xúc kém. Xem log `SD: ...` |
 
 ## 7.6 Công cụ phần cứng hữu ích
 
 ```bash
 # đọc MAC / xác định board trên cổng COM
-python ~/.platformio/packages/tool-esptoolpy@1.40501.0/esptool.py --port COM18 --chip esp32s3 read_mac
+python ~/.platformio/packages/tool-esptoolpy@1.40501.0/esptool.py --port COM4 --chip esp32s3 read_mac
 # so sánh firmware trên chip với bản build
-python .../esptool.py --port COM18 --chip esp32s3 verify_flash 0x0 bootloader.bin 0x8000 partitions.bin 0x10000 firmware.bin
+python .../esptool.py --port COM4 --chip esp32s3 verify_flash 0x0 bootloader.bin 0x8000 partitions.bin 0x10000 firmware.bin
 # đọc eFuse (cần thêm: pip install cryptography bitstring==3.1.9 reedsolo ecdsa)
-python .../espefuse.py --port COM18 --chip esp32s3 summary
+python .../espefuse.py --port COM4 --chip esp32s3 summary
 ```

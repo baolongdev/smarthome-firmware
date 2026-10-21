@@ -384,7 +384,7 @@ void printTasks() {
 // "page <0..3>", "scroll <px>", "drag x y0 y1 [ms]", "devices", "wifi" (open + scan), "theme <0..2>",
 // "sensor ok|warn|error|loading|stale|sim", "bench [psram|hybrid]" (UI build/redraw timing).
 void consoleTask(void*) {
-    char line[48];
+    char line[80];
     uint8_t len = 0;
     for (;;) {
         while (Serial.available()) {
@@ -435,10 +435,26 @@ void consoleTask(void*) {
                 hmi::benchmark(strstr(line, "psram") ? 1 : strstr(line, "hybrid") ? 2 : 0);
             } else if (strncmp(line, "view ", 5) == 0) {
                 hmi::previewFile(line + 5);
-            } else if (strcmp(line, "kbd") == 0) {
-                hmi::previewKeyboard();
+            } else if (strncmp(line, "kbd", 3) == 0) {  // "kbd" secured, "kbd open" open network
+                hmi::previewKeyboard(strstr(line, "open") != nullptr);
             } else if (strcmp(line, "devices") == 0) {
                 tasmota::print(Serial);
+            } else if (strncmp(line, "wifi 11b ", 9) == 0) {
+                wifimgr::retry11b(line + 9);
+            } else if (strncmp(line, "wifi mac ", 9) == 0) {  // "wifi mac <ssid>": retry with another MAC
+                wifimgr::retryWithNewMac(line + 9);
+            } else if (strncmp(line, "wifi bssid ", 11) == 0) {  // "wifi bssid aa:bb:cc:dd:ee:ff <ch> <ssid>"
+                unsigned b[6];
+                int ch = 0, off = 0;
+                if (sscanf(line + 11, "%x:%x:%x:%x:%x:%x %d %n", &b[0], &b[1], &b[2], &b[3], &b[4], &b[5], &ch, &off) >= 7) {
+                    const uint8_t bssid[6] = {(uint8_t)b[0], (uint8_t)b[1], (uint8_t)b[2], (uint8_t)b[3], (uint8_t)b[4], (uint8_t)b[5]};
+                    wifimgr::joinBssid(line + 11 + off, bssid, ch);
+                }
+            } else if (strncmp(line, "wifi join ", 10) == 0) {  // saved network, stored password
+                NetMsg m{NetCmd::Join, {}, {}};
+                strlcpy(m.ssid, line + 10, sizeof(m.ssid));
+                strlcpy(m.pass, wifimgr::kUseSaved, sizeof(m.pass));  // ignored if the scan saw it open
+                postNet(m);
             } else if (strcmp(line, "wifi") == 0) {
                 hmi::showPage(3);
                 postNet(NetMsg{NetCmd::Scan, {}, {}});
@@ -463,8 +479,8 @@ void onBrightnessChanged(uint8_t pct) { postApp(AppMsg{AppCmd::SaveBrightness, p
 void onAutoDimChanged(bool on) { postApp(AppMsg{AppCmd::SaveAutoDim, 0, on, {}, {}}); }
 void onThemeChanged(uint8_t i) { postApp(AppMsg{AppCmd::SaveTheme, i, false, {}, {}}); }
 void onBacklight(uint8_t pct) {
-    pct = constrain(pct, 10, 100);
-    display.setBrightness(map(pct, 10, 100, HMI_BACKLIGHT_MIN_DUTY, 255));
+    pct = constrain(pct, 0, 100);
+    display.setBrightness(map(pct, 0, 100, HMI_BACKLIGHT_MIN_DUTY, 255));
 }
 void onWifiScan() { postNet(NetMsg{NetCmd::Scan, {}, {}}); }
 void onWifiJoin(const char* ssid, const char* pass) {
@@ -485,15 +501,15 @@ uint8_t deviceList(hmi::DeviceInfo* out) {
         memcpy(out, g_sdConfig.tasmota, sizeof(hmi::DeviceInfo) * g_sdConfig.tasmotaCount);
         return g_sdConfig.tasmotaCount;
     }
-    const struct { const char* name; const char* host; uint8_t channels; } defaults[] = {
-        {TASMOTA_1_NAME, TASMOTA_1_HOST, TASMOTA_1_CHANNELS},
-        {TASMOTA_2_NAME, TASMOTA_2_HOST, TASMOTA_2_CHANNELS},
+    const struct { const char* name; const char* key; uint8_t channels; } defaults[] = {
+        {TASMOTA_1_NAME, TASMOTA_1_KEY, TASMOTA_1_CHANNELS},
+        {TASMOTA_2_NAME, TASMOTA_2_KEY, TASMOTA_2_CHANNELS},
     };
     uint8_t n = 0;
     for (const auto& d : defaults) {
         out[n] = hmi::DeviceInfo{};
         strlcpy(out[n].name, d.name, sizeof(out[n].name));
-        strlcpy(out[n].host, d.host, sizeof(out[n].host));
+        strlcpy(out[n].key, d.key, sizeof(out[n].key));
         out[n].channels = d.channels;
         n++;
     }
@@ -564,7 +580,7 @@ void setup() {
     const uint8_t deviceCount = deviceList(devices);
     hmi::configureDevices(devices, deviceCount);  // the Control page is built for these
     hmi::begin(display, cb);  // "ui" task, core 1
-    tasmota::start(devices, deviceCount);
+    tasmota::start(devices, deviceCount, g_sdConfig.hasTasmotaApi ? g_sdConfig.tasmotaApi : TASMOTA_API_URL);
 
     storage::start();
     xTaskCreatePinnedToCore(appTask, "app", 4 * 1024, nullptr, 4, nullptr, 1);

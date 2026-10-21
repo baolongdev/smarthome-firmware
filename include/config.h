@@ -37,11 +37,11 @@
 
 // ===== HMI (LVGL) =====
 #define HMI_ROOM_NAME "Phòng khách"            // header title (UTF-8)
-#define HMI_DIM_AFTER_MS 30000                 // auto-dim idle time (toggle in Settings)
-#define HMI_DIM_BRIGHTNESS_PCT 15
-// LEDC duty (of 255) for the lowest slider position (10 %).  Below ~40 the
-// panel looks off; the slider range 10..100 % maps linearly onto this..255.
-#define HMI_BACKLIGHT_MIN_DUTY 40
+#define HMI_DIM_AFTER_MS 120000                // screensaver + dim after 2 min idle (toggle in Settings)
+#define HMI_DIM_BRIGHTNESS_PCT 0               // auto-dim level on the slider scale (0 = floor)
+// Slider 0..100 % maps linearly onto LEDC duty HMI_BACKLIGHT_MIN_DUTY..255, so
+// "0 %" is still half brightness: the panel never goes dark from the slider.
+#define HMI_BACKLIGHT_MIN_DUTY 128
 #define HMI_TZ_OFFSET_SECONDS (7 * 3600)
 
 // Primary gauge + two metric cards.  Labels/units/scale are data: change them
@@ -67,15 +67,24 @@
 // #define HMI_BTN_NEXT_PIN x
 // #define HMI_BTN_OK_PIN   x
 
-// Tasmota devices on the LAN, controlled over their HTTP API (/cm?cmnd=...).
-// /config.json "tasmota": [{"name","host","channels","labels":[...]}] overrides these.
+// Tasmota devices, controlled only through the web gateway
+// (web/src/app/api/tasmota/route.ts).  The server sits on the devices' LAN, so
+// the panel just needs Internet - any Wi-Fi works.
+//   GET  <url>                                        -> {"states":{"primary":{"power1":true,..},"secondary":{..}}}
+//   POST <url> {"device":"primary","channel":1,"action":"toggle"} -> {"device","states":{..}}
+// KEY is the device name on the gateway.  /config.json overrides:
+//   "tasmotaApi": "<url>", "tasmota": [{"name","key","channels","labels":[...]}]
+#define TASMOTA_API_URL "https://smarthome.blong.id.vn/api/tasmota"
 #define TASMOTA_1_NAME "Sonoff M5-3C"
-#define TASMOTA_1_HOST "172.28.182.3"
+#define TASMOTA_1_KEY "primary"
 #define TASMOTA_1_CHANNELS 3
 #define TASMOTA_2_NAME "TX Ultimate 4C"
-#define TASMOTA_2_HOST "172.28.182.4"
+#define TASMOTA_2_KEY "secondary"
 #define TASMOTA_2_CHANNELS 4
-#define TASMOTA_POLL_MS 3000
+// 1 s: changes made on the web or on the switches show within ~1.5 s, and the
+// TLS connection never idles long enough for the server (~5 s keep-alive) to
+// close it - a closed one costs a 2 s timeout plus a ~3 s new handshake.
+#define TASMOTA_POLL_MS 1000
 
 // UTF-8 relay names (Control screen).
 #define RELAY_NAME_1 "Phòng khách"

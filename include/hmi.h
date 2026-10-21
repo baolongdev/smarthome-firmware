@@ -62,6 +62,7 @@ struct WifiNetwork {
     char ssid[33];
     int8_t rssi;
     bool secure;
+    bool saved = false;  // password already known (NVS, config.json or config.h)
 };
 
 enum class WifiJoin : uint8_t { Idle, Connecting, Connected, Failed };
@@ -92,7 +93,7 @@ constexpr uint8_t kMaxDevices = 4;
 constexpr uint8_t kMaxChannels = 8;
 struct DeviceInfo {
     char name[24];
-    char host[16];
+    char key[16];   // device name on the web gateway: "primary", "secondary"
     uint8_t channels;
     char labels[kMaxChannels][20];  // "" = "Kênh n"
 };
@@ -149,7 +150,7 @@ void setMetric(uint8_t index, float value, SensorState state = SensorState::Ok);
 void setLink(Link link);
 void setClock(const char* hhmm);  // "--:--" until NTP
 void setRelay(uint8_t index, bool on);
-void setBrightness(uint8_t pct);  // 10..100
+void setBrightness(uint8_t pct);  // 0..100 slider scale (0 % is still half backlight)
 void setAutoDim(bool on);
 void setTheme(uint8_t index);  // colour palette: 0 Lime, 1 Ember, 2 Cobalt
 void setSystemInfo(const SystemInfo& info);
@@ -168,7 +169,7 @@ void setFileView(const FileView& view, const char* text = nullptr, const uint16_
 
 void showPage(uint8_t page);  // 0 Tổng quan, 1 Điều khiển, 2 Cài đặt, 3 Wi-Fi (async)
 void scrollPage(int16_t dy);  // scroll the current page by dy px (console testing)
-void previewKeyboard();  // open the Wi-Fi password sheet for a dummy network (console testing)
+void previewKeyboard(bool open = false);  // open the Wi-Fi password sheet for a dummy network (console testing)
 void showDetail(uint8_t topic);  // Settings detail page: 0 Mạng .. 2 Bộ nhớ .. 6 Giới thiệu (console)
 // Rebuild the UI and time full redraws; policy 0 keep, 1 all-PSRAM, 2 hybrid (console).
 void benchmark(uint8_t policy);

@@ -2,6 +2,7 @@
 
 #include <Preferences.h>
 #include <WiFi.h>
+#include <esp_wifi.h>
 
 #include "config.h"
 #include "hmi.h"
@@ -33,6 +34,19 @@ bool s_joining = false;
 uint32_t s_joinAt = 0;
 Cred s_join;
 volatile uint8_t s_lastReason = 0;  // WIFI_REASON_* of the last disconnect
+// SSIDs the last scan reported as open.  A stored password must not be sent
+// to them: the ESP32 then only accepts a secured AP and an open router never
+// answers (AUTH_EXPIRE) - how RD-SEAI_2.4G failed after it dropped its password.
+char s_open[kMaxScan][33];
+bool s_bootScan = false;
+uint8_t s_openCount = 0;
+
+bool isOpen(const char* ssid) {
+    for (uint8_t i = 0; i < s_openCount; i++) {
+        if (strcmp(s_open[i], ssid) == 0) return true;
+    }
+    return false;
+}
 
 void addKnown(const char* ssid, const char* pass) {
     if (!ssid || !ssid[0] || s_knownCount >= kMaxKnown) return;
@@ -44,10 +58,19 @@ void addKnown(const char* ssid, const char* pass) {
     s_knownCount++;
 }
 
+const Cred* findKnown(const char* ssid) {
+    for (uint8_t i = 0; i < s_knownCount; i++) {
+        if (strcmp(s_known[i].ssid, ssid) == 0) return &s_known[i];
+    }
+    return nullptr;
+}
+
 void connectTo(const char* ssid, const char* pass) {
     WiFi.disconnect(false, false);
     s_lastReason = 0;
-    if (pass && pass[0]) WiFi.begin(ssid, pass);
+    const bool usePass = pass && pass[0] && !isOpen(ssid);
+    Serial.printf("WiFi: begin %s (%s)\n", ssid, usePass ? "with password" : "open, no password");
+    if (usePass) WiFi.begin(ssid, pass);
     else WiFi.begin(ssid);
 }
 
@@ -81,6 +104,7 @@ const char* failMessage(uint8_t reason) {
 void finishScan(int16_t n) {
     hmi::WifiNetwork list[kMaxScan];
     uint8_t count = 0;
+    s_openCount = 0;
     for (int16_t i = 0; i < n && count < kMaxScan; i++) {
         const String ssid = WiFi.SSID(i);
         if (ssid.isEmpty()) continue;  // hidden networks
@@ -90,6 +114,12 @@ void finishScan(int16_t n) {
         strlcpy(list[count].ssid, ssid.c_str(), sizeof(list[count].ssid));
         list[count].rssi = WiFi.RSSI(i);
         list[count].secure = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
+        if (!list[count].secure) strlcpy(s_open[s_openCount++], list[count].ssid, sizeof(s_open[0]));
+        if (s_bootScan)  // the boot scan lists what the panel hears (RSSI here, not at the laptop)
+            Serial.printf("WiFi:   %4d dBm ch%-2d %s %s\n", list[count].rssi, WiFi.channel(i),
+                          list[count].secure ? "WPA " : "open", list[count].ssid);
+        const Cred* k = findKnown(list[count].ssid);
+        list[count].saved = k && (k->pass[0] || !list[count].secure);
         count++;
     }
     WiFi.scanDelete();
@@ -123,6 +153,9 @@ void begin(const storage::Config& sd) {
     // MAC for a while (endless AUTH_EXPIRE).  Retries are paced in loop() instead.
     WiFi.setAutoReconnect(false);
     Serial.printf("WiFi: %u known network(s)\n", s_knownCount);
+    s_bootScan = true;
+    finishScan(WiFi.scanNetworks(false, false));  // ~2 s, also fills the Wi-Fi page
+    s_bootScan = false;
     tryNextKnown();
 }
 
@@ -203,11 +236,50 @@ void startScan() {
 void join(const char* ssid, const char* password) {
     strlcpy(s_join.ssid, ssid, sizeof(Cred::ssid));
     strlcpy(s_join.pass, password ? password : "", sizeof(Cred::pass));
+    if (strcmp(s_join.pass, kUseSaved) == 0) {  // "Kết nối" on a saved, secured network
+        const Cred* k = findKnown(ssid);
+        strlcpy(s_join.pass, k ? k->pass : "", sizeof(Cred::pass));
+    }
     s_joining = true;
     s_joinAt = millis();
     hmi::setWifiJoin(hmi::WifiJoin::Connecting, "");
     Serial.printf("WiFi: joining %s\n", ssid);
     connectTo(s_join.ssid, s_join.pass);
+}
+
+// Diagnostics (console "wifi bssid <aa:bb:..> <channel> <ssid>"): join one
+// specific access point with the stored password.
+void joinBssid(const char* ssid, const uint8_t* bssid, int32_t channel) {
+    join(ssid, kUseSaved);
+    WiFi.disconnect(false, false);
+    WiFi.begin(s_join.ssid, s_join.pass[0] ? s_join.pass : nullptr, channel, bssid);
+    Serial.printf("WiFi: joining %s via %02x:%02x:%02x:%02x:%02x:%02x ch%ld, panel MAC %s\n", ssid, bssid[0], bssid[1],
+                  bssid[2], bssid[3], bssid[4], bssid[5], (long)channel, WiFi.macAddress().c_str());
+}
+
+// Diagnostics (console "wifi mac"): switch the station to a locally
+// administered MAC (until reboot) and retry, to tell a router-side MAC block
+// apart from a radio problem.
+void retryWithNewMac(const char* ssid) {
+    uint8_t mac[6];
+    esp_wifi_get_mac(WIFI_IF_STA, mac);
+    mac[0] = (mac[0] | 0x02) & 0xFE;  // locally administered, unicast
+    mac[5] ^= 0x5A;
+    WiFi.disconnect(false, false);
+    esp_wifi_stop();
+    const esp_err_t err = esp_wifi_set_mac(WIFI_IF_STA, mac);
+    esp_wifi_start();
+    Serial.printf("WiFi: station MAC now %s (%s)\n", WiFi.macAddress().c_str(), esp_err_to_name(err));
+    join(ssid, kUseSaved);
+}
+
+// Diagnostics (console "wifi 11b <ssid>"): 802.11b only - lowest rates, best
+// sensitivity - for an AP that hears the panel badly.  Until reboot.
+void retry11b(const char* ssid) {
+    WiFi.disconnect(false, false);
+    const esp_err_t err = esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B);
+    Serial.printf("WiFi: protocol 802.11b only (%s)\n", esp_err_to_name(err));
+    join(ssid, kUseSaved);
 }
 
 bool connected() { return WiFi.status() == WL_CONNECTED; }

@@ -452,17 +452,130 @@ Trước đó PSRAM còn trống 7,4 MB và phân vùng flash 3,4 MB bỏ không
 
 ---
 
+## 30. Độ sáng tối thiểu 50%
+
+- Thanh trượt hiện 0–100%, nhưng ánh xạ sang duty LEDC
+  `HMI_BACKLIGHT_MIN_DUTY` (128, tức 50%) .. 255. Kéo hết xuống vẫn nhìn rõ
+  màn hình (trước đó 10% gần như tắt hẳn).
+- Tự giảm sáng (`HMI_DIM_BRIGHTNESS_PCT` = 0) hạ về đúng mức sàn đó.
+- Model nhận 0..100 (trước kẹp 10..100). Mức đã lưu trong NVS vẫn dùng được.
+
+---
+
+## 31. Màn hình chờ logo Bách Khoa
+
+- Khi tự giảm sáng thì hiện `ui.saver`: nền đen kèm `brandLockup()`, cụm dùng
+  chung với màn hình khởi động. Logo dời vị trí mỗi phút để chống lưu ảnh.
+- Thoát: wake guard của port nuốt lần chạm đầu rồi gọi `onWake()`, hàm này ẩn
+  màn hình chờ.
+- Công tắc trong Cài đặt đổi tên thành "Màn hình chờ sau 30 giây".
+- Không che tiến trình cập nhật firmware.
+
+---
+
+## 32. Bảng kết nối cho mạng mở (không mật khẩu)
+
+- **Lỗi cũ:** ô mật khẩu và bàn phím bị ẩn nhưng nút và dòng trạng thái vẫn ở
+  chỗ cũ, nên phía trên trống một khoảng, nút "Kết nối" lơ lửng.
+- **Sửa:** `sheetLayout(secure)`:
+  - mạng mở: thẻ "Mạng mở · không cần mật khẩu · dữ liệu không được mã hoá"
+    thế chỗ ô mật khẩu, nút "Kết nối" rộng hết cột, dòng trạng thái ngay dưới;
+  - mạng có mật khẩu: giữ bố cục cũ.
+- Lệnh serial `kbd open` mở bảng cho một mạng mở giả, để kiểm tra.
+
+---
+
+## 33. Điều khiển Tasmota: panel vào nhầm mạng, không vào được RD-SEAI
+
+- **Triệu chứng:** Sonoff M5-3C (`172.28.182.3`) và TX Ultimate (`.4`) luôn
+  "Ngoại tuyến" trên panel.
+- **Nguyên nhân 1, mạng:** panel ở **RFThings VietNam** (`192.168.130.171`),
+  còn thiết bị ở **RD-SEAI_2.4G** (`172.28.182.x`). RFThings là mạng được chọn
+  trên panel (lưu NVS) nên luôn được thử trước.
+- **Cập nhật (đo lại):** RD-SEAI_2.4G hiện là **mạng mở**, nhưng `config.h`
+  vẫn lưu mật khẩu cũ, và mọi lần thử trước đều gửi kèm mật khẩu. Đã sửa:
+  quét đồng bộ lúc khởi động, nhớ SSID nào đang mở (`s_open`) và kết nối mạng
+  mở thì không gửi mật khẩu; nút "Kết nối" của mạng đã lưu gửi `kUseSaved`
+  thay vì chuỗi rỗng. Thử lại đúng kiểu mạng mở, rồi thêm đổi MAC và chỉ dùng
+  802.11b: vẫn `AUTH_EXPIRE`. Danh sách quét lúc khởi động cho thấy nguyên nhân:
+  RD-SEAI ở **-77 dBm** tại panel (laptop 91%, khoảng -45 dBm), cùng kênh 1
+  với RFThings -57 dBm. Router không nghe được panel; cần đặt panel gần router
+  hơn (hoặc kiểm tra lọc MAC).
+- **Nguyên nhân 2 (giả thuyết ban đầu), router:** vào RD-SEAI luôn nhận `AUTH_EXPIRE` (reason 2)
+  sau khoảng 1 giây, kể cả khi chỉ định đúng AP (`wifi bssid
+  14:1f:ba:74:d6:e8 1 RD-SEAI_2.4G`). Máy tính cùng chỗ vào AP đó với sóng
+  89%, panel vào RFThings ở -62 dBm. Kết luận: router không trả lời xác thực
+  của panel (MAC panel `98:3D:AE:E1:8B:BC`); cần kiểm tra lọc MAC, danh sách
+  chặn, giới hạn số máy, PMF/WPA3 trên router.
+- **Đã cải thiện phía panel:**
+  - Tasmota: timeout 3 giây, thử lại 1 lần, chỉ báo OFFLINE sau 3 lần hỏi
+    lỗi liên tiếp, đang OFFLINE thì 5 giây hỏi lại. Lệnh `devices` in Wi-Fi,
+    IP, RSSI và số lần thành công / lỗi của từng thiết bị.
+  - Mạng đã có mật khẩu (NVS / `config.json` / `config.h`) ghi "Đã lưu" trong
+    danh sách; chạm vào thì kết nối luôn, có nút "Nhập mật khẩu khác". Lệnh
+    serial `wifi join <ssid>`.
+  - `WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN)` + `setSortMethod` làm việc
+    quét bất đồng bộ không bao giờ xong trên Arduino-ESP32 2.0.17, nên đã bỏ.
+
+---
+
+## 34. Điều khiển Tasmota chỉ qua web, màn hình chờ sau 2 phút
+
+- Panel không vào được RD-SEAI (mục 33), nên chuyển sang API của web
+  `https://smarthome.blong.id.vn/api/tasmota`. Máy chủ web ở cùng mạng với
+  thiết bị, panel chỉ cần Internet.
+- **Bỏ hẳn cách gọi thẳng IP** (`/cm?cmnd=…`): `DeviceInfo.host` đổi thành
+  `key` (`primary` / `secondary`); `config.json` dùng `"key"` và `"tasmotaApi"`.
+- **Kết nối:** HTTPS giữ kết nối để dùng lại, khoảng 0,4 s/request (bắt tay
+  lại khoảng 3 s). Máy chủ Node đóng kết nối nhàn rỗi sau khoảng 5 s, nên
+  request trên kết nối cũ chỉ chờ 2 s rồi gửi lại trên kết nối mới.
+- **Bật/tắt lạc quan:** công tắc đổi ngay, đúng theo trạng thái web trả về.
+- **Stack và RAM:** task `devices` 10 KB stack (bắt tay TLS); RAM nội trống
+  khoảng 80–90 KB vì bộ đệm TLS.
+- **Đo:** cả hai thiết bị online qua mạng RFThings, `ok 5 fail 0`, 391 ms.
+- **Màn hình chờ:** sau 2 phút thay vì 30 giây (`HMI_DIM_AFTER_MS`); nhãn
+  Cài đặt tự hiện "sau 2 phút".
+
+---
+
+## 35. Đồng bộ Tasmota nhanh: client HTTP riêng
+
+- **Triệu chứng:** đồng bộ chậm. Panel thường mất 0,4 s nhưng có lúc 6,5–9,5 s
+  và "read Timeout"; hỏi 1 s/lần cũng không đỡ.
+- **Đo:** từ máy tính web trả lời 0,4–0,7 s; curl dùng 1 kết nối cho 5 request.
+  Web chạy sau Cloudflare, body trả về dạng `Transfer-Encoding: chunked`.
+- **Nguyên nhân:** `HTTPClient` (Arduino-ESP32 2.0.17) dùng lại kết nối nhưng
+  không đọc phần kết thúc của body chunked. Request sau đọc phải phần thừa đó
+  rồi chờ tới timeout, sau đó phải bắt tay TLS lại (khoảng 3 s).
+- **Sửa:** client HTTP/1.1 nhỏ tự viết trên `WiFiClientSecure` (đọc header,
+  chunked, `Content-Length`, `Connection: close`), hỏi 1 s/lần.
+- **Đo lại 40 s:** 22 lần hỏi, 0 lỗi, 0,41–0,51 s mỗi lần.
+
+---
+
+## 36. Ảnh chụp toàn bộ màn hình, sửa dựng lại trang chi tiết
+
+- Chụp 24 màn hình qua COM4 vào `docs/images/hmi-*.png` (bảng trong
+  `docs/README.md`), thay các ảnh cũ chụp từ giao diện trước.
+- **Sửa:** đổi bảng màu khi đang ở trang chi tiết thì `buildAll()` dựng lại
+  khung nhưng tiêu đề và nội dung trống (chúng do `showTopic()` tạo khi mở
+  trang). Giờ `buildAll()` giữ chủ đề, trang cha, khung lịch sử và mở lại trang.
+- **Màn hình chờ** đã kiểm chứng trên board: bật đúng ở giây thứ 120 không chạm
+  (log `inactive … dimmed 1`).
+- **PlatformIO trong `~/.platformio/penv` bị gỡ** (VS Code đang cài lại):
+  build bằng `python -m platformio` của Python 3.12 hệ thống (Core 6.2.0).
+
+---
+
 ## Việc còn lại
 
 | Việc | Cần gì |
 |---|---|
-| Ổn định Wi-Fi | đặt board gần router / không che anten; thử lại |
-| Thử điều khiển TX Ultimate từ panel | Wi-Fi ổn định |
-| Sonoff M5-3C | xác nhận thiết bị đang bật và IP hiện tại |
-| MQTT | địa chỉ broker thật trong mạng `172.28.182.x` |
-| Xác nhận cuộn bằng tay trên máy thật | đã kiểm chứng bằng `drag` giả lập, cần người dùng vuốt thử |
-| Thử cập nhật firmware từ thẻ, nhập mật khẩu Wi-Fi | thao tác chạm thật |
+| Wi-Fi tại chỗ đặt panel | đặt panel nơi có mạng mạnh (RSSI ≥ -70 dBm theo danh sách quét lúc khởi động) |
+| MQTT | địa chỉ broker thật trong mạng đang dùng |
+| Thử cập nhật firmware từ thẻ, `sd restore` | một `firmware.bin` thật trên thẻ |
+| Xem ảnh JPG/PNG | ảnh thật trên thẻ |
 | Cảm biến thật | nối cảm biến hoặc gửi số liệu qua MQTT `.../sensor` |
 | Xử lý `MQTT_TOPIC_CONFIG`, MQTT OTA | chưa cài đặt |
+| Chụp lại ảnh Điều khiển / Wi-Fi khi panel có mạng | ảnh hiện tại chụp lúc không có Wi-Fi |
 | Cập nhật canvas thiết kế theo firmware hiện tại | tuỳ chọn |
-| Commit | chờ người dùng đồng ý |

@@ -60,6 +60,8 @@ Nguồn: driver chạy được của project reference, cùng bảng phân châ
 | Laptop cạnh board, mạng `RD-SEAI_2.4G` | 95%, kênh 1, 2.4 GHz, 802.11n, **mạng mở** |
 | Board, cùng mạng (vị trí 1) | **-77 dBm**. Tất cả mạng quét được đều ở mức icon yếu nhất (< -72 dBm) |
 | Board, vị trí 2 (sau khi cắm sang cổng USB khác) | `NO_AP_FOUND`: không thấy mạng |
+| Board, 15/10/2026 (danh sách quét lúc khởi động) | RFThings VietNam **-57 dBm**, RD-SEAI_2.4G **-77 dBm** (laptop 91%), cùng kênh 1; vào RD-SEAI luôn `AUTH_EXPIRE` |
+| Board, 21/10/2026 (vị trí khác) | chỉ thấy UIT / Khoa ở -92 đến -96 dBm |
 
 Board thu và phát sóng kém hơn nhiều so với laptop. Nguyên nhân có thể là:
 
@@ -68,7 +70,9 @@ Board thu và phát sóng kém hơn nhiều so với laptop. Nguyên nhân có t
 - nhiễu từ bus RGB tốc độ cao của màn hình.
 
 Firmware đã tối ưu phía phần mềm (xem [05-ket-noi.md](05-ket-noi.md)), nhưng
-**cần đặt board gần router hơn và không che anten**.
+**cần đặt board gần router hơn và không che anten**. Mỗi lần khởi động, log
+Serial in RSSI của mọi mạng tại chỗ đặt panel để kiểm tra vị trí. Tasmota đi
+qua web nên chỉ cần một mạng có Internet mà panel bắt tốt.
 
 ## 1.5 eFuse (đã đọc bằng espefuse)
 
@@ -86,8 +90,8 @@ Firmware đã tối ưu phía phần mềm (xem [05-ket-noi.md](05-ket-noi.md)),
 | otadata | data/ota | 0xE000 | 8 KB |
 | app0 | app/ota_0 | 0x10000 | 6400 KB |
 | app1 | app/ota_1 | 0x650000 | 6400 KB |
-| spiffs | data/spiffs | 0xC90000 | 3456 KB (hiện không dùng; font đã biên dịch vào firmware) |
+| spiffs | data/spiffs | 0xC90000 | 3456 KB: **LittleFS** (bản sao `config.json`, lịch sử cảm biến mỗi giờ; 06-the-nho.md, mục 6.11) |
 | coredump | data/coredump | 0xFF0000 | 64 KB |
 
 Hai khe OTA dùng chung vùng app 12.800 KB; mỗi khe chứa tối đa 6400 KB. Firmware
-hiện chiếm khoảng **1,3 MB / 6,4 MB** (19,9%).
+hiện chiếm khoảng **1,77 MB / 6,4 MB** (khoảng 27%).

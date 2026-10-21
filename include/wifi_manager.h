@@ -14,7 +14,12 @@ namespace wifimgr {
 void begin(const storage::Config& sd);
 void loop();
 void startScan();
+// password kUseSaved: use the stored one (saved network); "" for open networks.
+constexpr const char* kUseSaved = "\x01";
 void join(const char* ssid, const char* password);
 bool connected();
+void joinBssid(const char* ssid, const uint8_t* bssid, int32_t channel);  // diagnostics
+void retryWithNewMac(const char* ssid);
+void retry11b(const char* ssid);  // diagnostics: 802.11b only until reboot  // diagnostics: other MAC until reboot
 
 }  // namespace wifimgr
