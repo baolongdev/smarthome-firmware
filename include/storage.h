@@ -75,6 +75,7 @@ void requestDelete(const char* path);  // files and empty folders; re-lists the 
 void requestTree();  // print every folder and file to Serial (console "sd tree")
 void requestWipe();  // delete everything on the card, keep /logs (console "sd wipe")
 void requestRestore();      // reinstall /backup/firmware-prev.bin (console "sd restore")
+void backupRunningFirmware();  // sao chép image đang chạy vào /backup trước khi thay thế
 void requestHistorySave();  // save history to SD and flash now (console "history save")
 
 }  // namespace storage
