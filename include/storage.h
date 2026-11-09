@@ -28,6 +28,17 @@ namespace storage {
 
 constexpr uint8_t kMaxWifi = 4;
 
+constexpr uint8_t kMaxEspNowPeers = 6;
+
+struct EspNowConfig {
+    bool enabled = false;
+    char pmk[33] = "";   // 32 hex chars
+    char lmk[33] = "";
+    uint8_t channel = 0; // 0 = follow current Wi-Fi STA channel
+    uint8_t peerCount = 0;
+    uint8_t peers[kMaxEspNowPeers][6] = {};
+};
+
 struct Config {
     bool loaded = false;
     uint8_t wifiCount = 0;
@@ -42,11 +53,13 @@ struct Config {
     bool hasTasmotaApi = false;  // "tasmotaApi" present (may be "" to disable the gateway)
     char tasmotaApi[128] = "";
     hmi::DeviceInfo tasmota[hmi::kMaxDevices] = {};
+    EspNowConfig espnow;
 };
 
 // --- setup(), before start(): synchronous ---
 bool begin();                  // mount if a card is present (safe without one)
 bool loadConfig(Config& out);  // /config.json
+bool saveEspNowConfig(const EspNowConfig& cfg);  // writes espnow section to /config.json on LittleFS/SD
 void start();                  // spawn the storage task (core 0, priority 1)
 
 // --- any task: non-blocking (dropped if the queue is full) ---

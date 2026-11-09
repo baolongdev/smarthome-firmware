@@ -1,12 +1,6 @@
 #pragma once
 // Public API of the LVGL HMI.  Firmware only pushes state in and receives user
 // intents through callbacks; it never touches LVGL objects.
-//
-//   hmi::begin(display, callbacks);   // starts the "ui" FreeRTOS task (core 1)
-//   hmi::setRelay(0, true); ...       // from ANY task: locked, cheap (marks state dirty)
-//
-// Callbacks run inside the UI task: they must return quickly (post to a queue,
-// never block on network/SD), or the UI freezes and the task watchdog fires.
 
 #include <Arduino.h>
 
@@ -17,10 +11,18 @@ namespace hmi {
 enum class SensorState : uint8_t { Loading, Ok, Error, Stale };
 enum class Link : uint8_t { Connecting, Online, BrokerDown, Offline };
 
+struct WifiNetwork {
+    char ssid[33];
+    int8_t rssi;
+    bool secure;
+    bool saved = false;  // password already known (NVS, config.json or config.h)
+};
+
+enum class WifiJoin : uint8_t { Idle, Connecting, Connected, Failed };
+
 // Everything the Settings rows and their detail pages show.  Sent by the net
 // task every few seconds.
 struct SystemInfo {
-    // network
     char ssid[33] = "";
     char ip[16] = "";
     int rssi = 0;
@@ -31,12 +33,13 @@ struct SystemInfo {
     char dns[16] = "";
     char mac[18] = "";
     char hostname[32] = "";
-    // MQTT
     char mqttHost[64] = "";
+    uint8_t espnowNodes = 0;
+    bool espnowReady = false;
+    char espnowStatus[40] = "";
     uint16_t mqttPort = 0;
-    int8_t mqttState = -1;    // PubSubClient::state()
-    bool mqttAuth = false;    // user name configured
-    // memory
+    int8_t mqttState = -1;
+    bool mqttAuth = false;
     uint32_t heapKB = 0;
     uint32_t heapMinKB = 0;
     uint32_t heapTotalKB = 0;
@@ -44,28 +47,18 @@ struct SystemInfo {
     uint32_t psramKB = 0;
     uint32_t psramTotalKB = 0;
     uint32_t flashMB = 0;
-    uint32_t appKB = 0;       // running firmware size
-    uint32_t appSlotKB = 0;   // free OTA slot
-    // runtime / chip
+    uint32_t appKB = 0;
+    uint32_t appSlotKB = 0;
     uint32_t uptimeS = 0;
-    uint8_t resetReason = 0;  // esp_reset_reason()
+    uint8_t resetReason = 0;
     bool timeSynced = false;
-    char date[11] = "";       // "13/10/2026" once NTP synced
+    char date[11] = "";
     char chip[24] = "";
     uint8_t chipRev = 0;
     uint8_t cores = 0;
     uint16_t cpuMHz = 0;
     char sdk[24] = "";
 };
-
-struct WifiNetwork {
-    char ssid[33];
-    int8_t rssi;
-    bool secure;
-    bool saved = false;  // password already known (NVS, config.json or config.h)
-};
-
-enum class WifiJoin : uint8_t { Idle, Connecting, Connected, Failed };
 
 struct StorageInfo {
     bool present = false;
@@ -88,101 +81,75 @@ struct StorageInfo {
     uint32_t lfsUsedKB = 0;
 };
 
-// Network devices (Tasmota) shown on the Control screen, grouped per device.
 constexpr uint8_t kMaxDevices = 4;
 constexpr uint8_t kMaxChannels = 8;
-struct DeviceInfo {
-    char name[24];
-    char key[16];   // device name on the web gateway: "primary", "secondary"
-    uint8_t channels;
-    char labels[kMaxChannels][20];  // "" = "Kênh n"
-};
+struct DeviceInfo { char name[24]; char key[16]; uint8_t channels; char labels[kMaxChannels][20]; };
 
-// SD card file browser (filled by the storage task).
 constexpr uint8_t kMaxFiles = 32;
-constexpr uint16_t kImageMax = 432;  // image preview fits the 432 px sub-page column
-struct FileEntry {
-    char name[40];
-    uint32_t size;
-    bool dir;
-};
-struct FileList {
-    char path[96] = "/";
-    uint8_t count = 0;
-    bool truncated = false;     // more than kMaxFiles entries
-    bool loading = false;
-    char error[48] = "";
-    FileEntry items[kMaxFiles];
-};
-struct FileView {
-    char path[96] = "";
-    uint32_t size = 0;
-    bool loading = false;
-    bool previewable = false;   // text file: `text` holds (part of) it
-    bool tail = false;          // `text` is the end of a longer file
-    uint32_t textLen = 0;       // bytes of text, kept outside the model (up to 64 KB)
-    bool image = false;         // image file: imgW x imgH RGB565 pixels outside the model
-    uint16_t imgW = 0, imgH = 0;  // fitted into kImageMax x kImageMax
-    uint16_t srcW = 0, srcH = 0;  // size of the image in the file
-    char error[48] = "";
+constexpr uint16_t kImageMax = 432;
+struct FileEntry { char name[40]; uint32_t size; bool dir; };
+struct FileList { char path[96] = "/"; uint8_t count = 0; bool truncated = false; bool loading = false; char error[48] = ""; FileEntry items[kMaxFiles]; };
+struct FileView { char path[96] = ""; bool loading = false; char error[48] = ""; uint32_t size = 0; uint16_t textLen = 0; uint16_t srcW = 0, srcH = 0; bool truncated = false; bool previewable = false; const char* tail = nullptr; bool image = false; uint16_t imgW = 0, imgH = 0; };
+
+struct EspNowUiConfig {
+    char masterMac[18] = "";
+    char pmk[33] = "";
+    char lmk[33] = "";
+    uint8_t channel = 1;
+    bool enabled = true;
 };
 
 struct Callbacks {
-    void (*relayToggle)(uint8_t index) = nullptr;     // user tapped a relay row
-    void (*brightnessChanged)(uint8_t pct) = nullptr; // slider released (persist it)
-    void (*autoDimChanged)(bool on) = nullptr;        // Settings switch (persist it)
-    void (*themeChanged)(uint8_t index) = nullptr;    // Settings colour palette (persist it)
+    void (*relayToggle)(uint8_t index) = nullptr;
+    void (*brightnessChanged)(uint8_t pct) = nullptr;
+    void (*autoDimChanged)(bool on) = nullptr;
+    void (*themeChanged)(uint8_t index) = nullptr;
+    void (*darkModeChanged)(bool on) = nullptr;
+    void (*backlight)(uint8_t pct) = nullptr;
+    void (*firmwareUpdate)() = nullptr;
+    void (*deviceToggle)(uint8_t device, uint8_t channel) = nullptr;
+    void (*fileList)(const char* path) = nullptr;
+    void (*fileRead)(const char* path) = nullptr;
+    void (*fileDelete)(const char* path) = nullptr;
     void (*wifiScan)() = nullptr;                     // Wi-Fi screen opened / refresh tapped
     void (*wifiJoin)(const char* ssid, const char* password) = nullptr;
-    void (*firmwareUpdate)() = nullptr;               // SD update confirmed (tapped twice)
-    void (*deviceToggle)(uint8_t device, uint8_t channel) = nullptr;
-    void (*fileList)(const char* path) = nullptr;     // open / refresh a folder
-    void (*fileRead)(const char* path) = nullptr;     // open a file
-    void (*fileDelete)(const char* path) = nullptr;   // confirmed (tapped twice)
-    void (*backlight)(uint8_t pct) = nullptr;         // drive the panel backlight
+    void (*espnowConfigSave)(const EspNowUiConfig& cfg) = nullptr;
 };
 
-void configureDevices(const DeviceInfo* list, uint8_t count);  // before begin()
+void configureDevices(const DeviceInfo* list, uint8_t count);
 void begin(LGFX& lcd, const Callbacks& cb);
 
 void setPrimary(float value, SensorState state = SensorState::Ok);
-void setMetric(uint8_t index, float value, SensorState state = SensorState::Ok);  // 0..1
+void setMetric(uint8_t index, float value, SensorState state = SensorState::Ok);
 void setLink(Link link);
-void setClock(const char* hhmm);  // "--:--" until NTP
+void setClock(const char* hhmm);
 void setRelay(uint8_t index, bool on);
-void setBrightness(uint8_t pct);  // 0..100 slider scale (0 % is still half backlight)
+void setBrightness(uint8_t pct);
 void setAutoDim(bool on);
-void setTheme(uint8_t index);  // colour palette: 0 Lime, 1 Ember, 2 Cobalt
+void setTheme(uint8_t index);
+void setDarkMode(bool on);
 void setSystemInfo(const SystemInfo& info);
-void setRoomName(const char* name);  // header title (default HMI_ROOM_NAME)
-
+void setEspNowUiConfig(const EspNowUiConfig& cfg);
 void setWifiNetworks(const WifiNetwork* list, uint8_t count);  // scan result
 void setWifiScanning(bool scanning);
 void setWifiJoin(WifiJoin state, const char* message);         // Connected: IP, Failed: reason
+void setRoomName(const char* name);
+
 void setStorage(const StorageInfo& info);
 void setUpdateProgress(int8_t pct);
-// Bit n of `mask` = channel n+1 on.  `online` false greys the group out.
 void setDeviceState(uint8_t device, uint8_t mask, bool online);
 void setFileList(const FileList& list);
-// text / pixels (native RGB565, view.imgW x view.imgH) are copied into PSRAM.
-void setFileView(const FileView& view, const char* text = nullptr, const uint16_t* pixels = nullptr);  // 0..100 shows the update overlay, -1 hides it
+void setFileView(const FileView& view, const char* text = nullptr, const uint16_t* pixels = nullptr);
 
-void showPage(uint8_t page);  // 0 Tổng quan, 1 Điều khiển, 2 Cài đặt, 3 Wi-Fi (async)
-void scrollPage(int16_t dy);  // scroll the current page by dy px (console testing)
-void previewKeyboard(bool open = false);  // open the Wi-Fi password sheet for a dummy network (console testing)
-void showDetail(uint8_t topic);  // Settings detail page: 0 Mạng .. 2 Bộ nhớ .. 6 Giới thiệu (console)
-// Rebuild the UI and time full redraws; policy 0 keep, 1 all-PSRAM, 2 hybrid (console).
+void showPage(uint8_t page);
+void scrollPage(int16_t dy);
+void previewKeyboard(bool open = false);
+void showDetail(uint8_t topic);
 void benchmark(uint8_t policy);
-void previewFile(const char* path);  // open a file in the viewer (console "view <path>")
-// Synthetic touch drag through the real LVGL input path (console testing).
+void previewFile(const char* path);
 void injectDrag(int16_t x, int16_t y0, int16_t y1, uint16_t ms);
-
-// Screenshots: the UI task takes the snapshot, the calling task streams it.
-// RLE RGB565 dump of the current screen for tools/screenshot.py.
 void screenshot(Print& out);
-// Same format, from the panel framebuffer `delayMs` from now (console "shot fb <ms>").
 void screenshotFramebuffer(Print& out, uint32_t delayMs);
-// 24-bit BMP of the current screen (e.g. to a File on the SD card).
 bool screenshotBmp(Print& out);
 
 }  // namespace hmi

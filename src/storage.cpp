@@ -409,13 +409,13 @@ void readFile(const char* path) {
     if (s_view.previewable) {
         const size_t cap = kTextCap;
         if (s_view.size > cap) {  // logs: the newest lines are at the end
-            s_view.tail = true;
+            s_view.truncated = true;
             f.seek(s_view.size - cap);
         }
         size_t n = f.read(reinterpret_cast<uint8_t*>(s_text), cap);
         s_text[n] = 0;
         text = s_text;
-        if (s_view.tail) {  // start at a line boundary, not mid-way through UTF-8
+        if (s_view.truncated && s_view.size > kTextCap) {  // start at a line boundary, not mid-way through UTF-8
             char* nl = strchr(s_text, '\n');
             if (nl) text = nl + 1;
             if (nl && isCsv(path)) {  // the table needs the header row: put it back in front
@@ -811,9 +811,53 @@ bool loadConfig(Config& out) {
         out.hasTasmotaApi = true;
         strlcpy(out.tasmotaApi, doc["tasmotaApi"] | "", sizeof(out.tasmotaApi));
     }
-    logEvent("config.json loaded from %s: %u Wi-Fi, mqtt=%s", s_configSource == 1 ? "SD" : "flash", out.wifiCount,
-             out.mqttHost[0] ? out.mqttHost : "-");
+    // ESP-NOW master (encrypted unicast). Keys: 32 hex chars. Peers: ["AA:BB:..."].
+    JsonObject en = doc["espnow"].as<JsonObject>();
+    if (!en.isNull()) {
+        out.espnow.enabled = en["enabled"] | false;
+        strlcpy(out.espnow.pmk, en["pmk"] | "", sizeof(out.espnow.pmk));
+        strlcpy(out.espnow.lmk, en["lmk"] | "", sizeof(out.espnow.lmk));
+        out.espnow.channel = (uint8_t)(en["channel"] | 0);
+        for (JsonVariant pv : en["peers"].as<JsonArray>()) {
+            if (out.espnow.peerCount >= kMaxEspNowPeers) break;
+            const char* m = pv.as<const char*>();
+            unsigned v[6] = {};
+            if (m && sscanf(m, "%02x:%02x:%02x:%02x:%02x:%02x", &v[0],&v[1],&v[2],&v[3],&v[4],&v[5]) == 6) {
+                for (int i=0;i<6;i++) out.espnow.peers[out.espnow.peerCount][i] = (uint8_t)v[i];
+                out.espnow.peerCount++;
+            }
+        }
+    }
+    logEvent("config.json loaded from %s: %u Wi-Fi, mqtt=%s, espnow=%s(%u)", s_configSource == 1 ? "SD" : "flash", out.wifiCount,
+             out.mqttHost[0] ? out.mqttHost : "-", out.espnow.enabled ? "on" : "off", out.espnow.peerCount);
     return true;
+}
+
+bool saveEspNowConfig(const EspNowConfig& cfg) {
+    auto writeTo = [&](FS& fs) {
+        JsonDocument doc;
+        File old = fs.open("/config.json", FILE_READ);
+        if (old) { deserializeJson(doc, old); old.close(); }
+        doc["espnow"]["enabled"] = cfg.enabled;
+        doc["espnow"]["pmk"] = cfg.pmk;
+        doc["espnow"]["lmk"] = cfg.lmk;
+        doc["espnow"]["channel"] = cfg.channel;
+        JsonArray peers = doc["espnow"]["peers"].to<JsonArray>();
+        for (uint8_t i = 0; i < cfg.peerCount; i++) {
+            char mac[18];
+            snprintf(mac, sizeof(mac), "%02X:%02X:%02X:%02X:%02X:%02X", cfg.peers[i][0], cfg.peers[i][1], cfg.peers[i][2], cfg.peers[i][3], cfg.peers[i][4], cfg.peers[i][5]);
+            peers.add(mac);
+        }
+        File f = fs.open("/config.json", FILE_WRITE);
+        if (!f) return false;
+        serializeJsonPretty(doc, f);
+        f.close();
+        return true;
+    };
+    bool ok = s_lfs && writeTo(LittleFS);
+    if (s_mounted) ok = writeTo(SD) || ok;
+    if (ok) logEvent("ESP-NOW config saved: ch%u peers=%u", cfg.channel, cfg.peerCount);
+    return ok;
 }
 
 void start() {

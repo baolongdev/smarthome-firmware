@@ -17,15 +17,16 @@ enum Dirty : uint32_t {
     D_BRIGHTNESS = 1u << 5,
     D_AUTODIM = 1u << 6,
     D_SYSTEM = 1u << 7,
-    D_THEME = 1u << 8,  // palette changed: widgets are rebuilt
-    D_WIFI_LIST = 1u << 9,
-    D_WIFI_JOIN = 1u << 10,
-    D_STORAGE = 1u << 11,
-    D_UPDATE = 1u << 12,
-    D_ROOM = 1u << 13,
-    D_DEVICES = 1u << 14,
-    D_FILES = 1u << 15,
-    D_FILEVIEW = 1u << 16,
+    D_THEME = 1u << 8,  // palette/mode changed: widgets are rebuilt
+    D_ESPNOW_CFG = 1u << 9,
+    D_WIFI_LIST = 1u << 10,
+    D_WIFI_JOIN = 1u << 11,
+    D_STORAGE = 1u << 12,
+    D_UPDATE = 1u << 13,
+    D_ROOM = 1u << 14,
+    D_DEVICES = 1u << 15,
+    D_FILES = 1u << 16,
+    D_FILEVIEW = 1u << 17,
     D_ALL = 0xFFFFFFFFu,
 };
 
@@ -44,12 +45,8 @@ struct Model {
     uint8_t brightness = 80;
     bool autoDim = true;
     uint8_t theme = 0;
+    bool darkMode = true;
     char room[32] = HMI_ROOM_NAME;
-    WifiNetwork networks[20];
-    uint8_t networkCount = 0;
-    bool scanning = false;
-    WifiJoin join = WifiJoin::Idle;
-    char joinMessage[48] = "";
     StorageInfo storage;
     int8_t updatePct = -1;
     uint8_t deviceCount = 0;           // fixed after configureDevices()
@@ -58,6 +55,12 @@ struct Model {
     bool deviceOnline[kMaxDevices] = {};
     bool deviceKnown[kMaxDevices] = {};  // false until the first poll answers or fails
     SystemInfo sys;
+    EspNowUiConfig espnowCfg;
+    WifiNetwork networks[20];
+    uint8_t networkCount = 0;
+    bool scanning = false;
+    WifiJoin join = WifiJoin::Idle;
+    char joinMessage[48] = "";
     FileList files;
     FileView view;
     uint32_t dirty = D_ALL;

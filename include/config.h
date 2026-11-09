@@ -3,30 +3,20 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
-// ===== WiFi Configuration =====
+// ===== Wi-Fi Configuration =====
+// Known networks are tried in order; the panel also remembers the last one
+// joined from its Wi-Fi screen (NVS).  /config.json on the SD card can list more.
 #define WIFI_SSID "RD-SEAI_2.4G"
-// Open Wi-Fi network: keep the password empty.
 #define WIFI_PASSWORD ""
 #define WIFI_HOSTNAME "esp32-4848s040"
-#define WIFI_RECONNECT_INTERVAL 10000
 
-// ===== MQTT Configuration =====
-#define MQTT_BROKER "192.168.1.100"
-#define MQTT_PORT 1883
-#define MQTT_CLIENT_ID "esp32-4848s040"
-#define MQTT_USER ""
-#define MQTT_PASSWORD ""
-#define MQTT_KEEPALIVE 60
-#define MQTT_RECONNECT_INTERVAL 5000
-
-// MQTT Topics
-#define MQTT_TOPIC_BASE "smarthome/device/esp32-4848s040"
-#define MQTT_TOPIC_STATE MQTT_TOPIC_BASE "/state"
-#define MQTT_TOPIC_COMMAND MQTT_TOPIC_BASE "/command"
-#define MQTT_TOPIC_CONFIG MQTT_TOPIC_BASE "/config"
-#define MQTT_TOPIC_AVAILABILITY MQTT_TOPIC_BASE "/availability"
-#define MQTT_TOPIC_OTA MQTT_TOPIC_BASE "/ota"
-#define MQTT_TOPIC_SENSOR MQTT_TOPIC_BASE "/sensor"
+// ===== ESP-NOW (panel = slave, receives relay commands from master) =====
+#define ESPNOW_ENABLED true
+#define ESPNOW_CHANNEL 1  // used when Wi-Fi is not connected; STA-connected ESP-NOW follows Wi-Fi channel
+#define ESPNOW_PMK "00112233445566778899AABBCCDDEEFF"
+#define ESPNOW_LMK "00112233445566778899AABBCCDDEEFF"
+// Master MAC that may control this panel. Set to your real master MAC.
+#define ESPNOW_MASTER_MAC "AA:BB:CC:DD:EE:FF"
 
 // ===== Display Configuration (ESP32-4848S040) =====
 #define DISPLAY_WIDTH 480
@@ -56,8 +46,7 @@
 #define HMI_METRIC2_LABEL "Công suất"
 #define HMI_METRIC2_UNIT "W"
 
-// No sensor is wired yet: simulate values until real data arrives on
-// MQTT_TOPIC_SENSOR ({"primary":26.4,"metric1":62,"metric2":412}).
+// No sensor wired: simulate values (ESP-NOW-only build can still show demo data).
 #define HMI_SIMULATE_SENSORS 1
 #define HMI_SENSOR_STALE_MS 60000
 
@@ -67,24 +56,15 @@
 // #define HMI_BTN_NEXT_PIN x
 // #define HMI_BTN_OK_PIN   x
 
-// Tasmota devices, controlled only through the web gateway
-// (web/src/app/api/tasmota/route.ts).  The server sits on the devices' LAN, so
-// the panel just needs Internet - any Wi-Fi works.
-//   GET  <url>                                        -> {"states":{"primary":{"power1":true,..},"secondary":{..}}}
-//   POST <url> {"device":"primary","channel":1,"action":"toggle"} -> {"device","states":{..}}
-// KEY is the device name on the gateway.  /config.json overrides:
-//   "tasmotaApi": "<url>", "tasmota": [{"name","key","channels","labels":[...]}]
-#define TASMOTA_API_URL "https://smarthome.blong.id.vn/api/tasmota"
-#define TASMOTA_1_NAME "Sonoff M5-3C"
-#define TASMOTA_1_KEY "primary"
-#define TASMOTA_1_CHANNELS 3
-#define TASMOTA_2_NAME "TX Ultimate 4C"
-#define TASMOTA_2_KEY "secondary"
-#define TASMOTA_2_CHANNELS 4
-// 1 s: changes made on the web or on the switches show within ~1.5 s, and the
-// TLS connection never idles long enough for the server (~5 s keep-alive) to
-// close it - a closed one costs a 2 s timeout plus a ~3 s new handshake.
-#define TASMOTA_POLL_MS 1000
+// Tasmota/HTTP devices disabled in ESP-NOW-only build.
+#define TASMOTA_API_URL ""
+#define TASMOTA_1_NAME "Relay 1"
+#define TASMOTA_1_KEY "r1"
+#define TASMOTA_1_CHANNELS 1
+#define TASMOTA_2_NAME "Relay 2"
+#define TASMOTA_2_KEY "r2"
+#define TASMOTA_2_CHANNELS 1
+#define TASMOTA_POLL_MS 5000
 
 // UTF-8 relay names (Control screen).
 #define RELAY_NAME_1 "Phòng khách"

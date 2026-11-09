@@ -1,26 +1,15 @@
-// Business logic as FreeRTOS tasks.  The LVGL HMI (src/hmi/) runs in its own
-// "ui" task and is driven only through include/hmi.h.
-//
-//   task      core prio  owns
-//   ui          1   3    LVGL, touch, backlight              (src/hmi/hmi_ui.cpp)
-//   app         1   4    relays, sensors, settings (NVS)     queue: AppMsg
-//   net         0   2    Wi-Fi manager, MQTT, OTA, NTP       queue: NetMsg
-//   devices     0   2    Tasmota relays over HTTP            (src/tasmota.cpp)
-//   storage     0   1    SD card: logs, stats, fw update     (src/storage.cpp)
-//   console     0   1    serial commands
-//
-// Tasks never call each other's code directly: they post messages.  Shared
-// state is either in the HMI model (locked) or std::atomic.
+// ESP-NOW-only firmware: panel is ESP-NOW slave controlling local relays.
+// No Wi-Fi manager, no MQTT, no Tasmota HTTP, no network OTA.
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
-#include <ArduinoOTA.h>
 #include <Preferences.h>
-#include <PubSubClient.h>
 #include <WiFi.h>
+#include <esp_wifi.h>
 #include <esp_task_wdt.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
 #include <time.h>
-
 #include <atomic>
 
 #include "config.h"
@@ -28,274 +17,92 @@
 #include "lgfx_4848s040_reference.h"
 #include "datalog.h"
 #include "storage.h"
-#include "tasmota.h"
 #include "wifi_manager.h"
+#include "espnow_master.h"
 
-// Touch is read through LGFX (Touch_GT911 on I2C_NUM_1).  Do not also start
-// Wire on GPIO19/45 - two drivers on the same pins corrupt touch reads.
 LGFX display;
 
 namespace {
 
-// ===================== shared state =====================
-
 const uint8_t kRelayPins[RELAY_COUNT] = {RELAY_PIN_1, RELAY_PIN_2, RELAY_PIN_3};
-std::atomic<bool> g_relay[RELAY_COUNT];       // written by app, read by net (MQTT state)
+std::atomic<bool> g_relay[RELAY_COUNT];
 std::atomic<uint32_t> g_relayChange[RELAY_COUNT];
-std::atomic<bool> g_publishPending{false};    // app -> net: publish MQTT state
 std::atomic<uint32_t> g_minFreeHeap{UINT32_MAX};
 uint32_t g_bootTime = 0;
-
-storage::Config g_sdConfig;  // /config.json, read once in setup()
-char g_mqttHost[64] = MQTT_BROKER;
-uint16_t g_mqttPort = MQTT_PORT;
-char g_mqttUser[32] = MQTT_USER;
-char g_mqttPass[64] = MQTT_PASSWORD;
-
-// ===================== messages =====================
-
-enum class AppCmd : uint8_t { RelayToggle, RelaySet, Sensors, SensorPreview, SaveBrightness, SaveAutoDim, SaveTheme };
-struct AppMsg {
-    AppCmd cmd;
-    uint8_t index;
-    bool flag;
-    float v[3];
-    char text[12];
-};
-
-enum class NetCmd : uint8_t { Scan, Join };
-struct NetMsg {
-    NetCmd cmd;
-    char ssid[33];
-    char pass[65];
-};
-
-QueueHandle_t g_appQ = nullptr;
-QueueHandle_t g_netQ = nullptr;
-
-void postApp(const AppMsg& m) { xQueueSend(g_appQ, &m, 0); }
-void postNet(const NetMsg& m) { xQueueSend(g_netQ, &m, 0); }
-
-// ===================== app task =====================
-
+storage::Config g_sdConfig;
 Preferences g_prefs;
 
-struct SensorValues {
-    float primary = 0, metric1 = 0, metric2 = 0;
-    bool primaryError = false;
-    bool stale = false;
-};
+enum class AppCmd : uint8_t { RelayToggle, RelaySet, SaveBrightness, SaveAutoDim, SaveTheme, SaveDark, SaveEspNow };
+struct AppMsg { AppCmd cmd; uint8_t index; bool flag; };
+struct EspCmd { uint8_t type; uint8_t index; bool on; };
+enum class NetCmd : uint8_t { Scan, Join };
+struct NetMsg { NetCmd cmd; char ssid[33]; char pass[65]; };
+QueueHandle_t g_appQ = nullptr;
+QueueHandle_t g_espQ = nullptr;
+QueueHandle_t g_espnowCfgQ = nullptr;
+QueueHandle_t g_netQ = nullptr;
+hmi::EspNowUiConfig g_pendingEspNowUi{};
 
-void setRelay(int index, bool on) {
-    if (index < 0 || index >= RELAY_COUNT || g_relay[index] == on) return;
-    g_relay[index] = on;
-    g_relayChange[index] = millis();
-    digitalWrite(kRelayPins[index], on ? HIGH : LOW);
-    hmi::setRelay(index, on);
-    storage::logEvent("Relay %d %s", index + 1, on ? "ON" : "OFF");
-    g_publishPending = true;
+void postApp(const AppMsg& m) { if (g_appQ) xQueueSend(g_appQ, &m, 0); }
+
+void setRelay(uint8_t i, bool on) {
+    if (i >= RELAY_COUNT) return;
+    digitalWrite(kRelayPins[i], on ? HIGH : LOW);
+    g_relay[i] = on;
+    g_relayChange[i] = millis();
+    hmi::setRelay(i, on);
 }
 
-void pushSensors(const SensorValues& s, hmi::SensorState state) {
-    hmi::setPrimary(s.primary, s.primaryError ? hmi::SensorState::Error : state);
-    hmi::setMetric(0, s.metric1, state);
-    hmi::setMetric(1, s.metric2, state);
-    static uint32_t lastLog = 0;
-    if (state == hmi::SensorState::Ok && !s.primaryError && (!lastLog || millis() - lastLog >= 60000)) {
-        lastLog = millis();
-        storage::logSensors(s.primary, s.metric1, s.metric2);
-    }
-    if (state == hmi::SensorState::Ok && !s.primaryError) datalog::addSample(s.primary, s.metric1, s.metric2);
+void applyEsp(const EspCmd& c) {
+    if (c.type == 0) setRelay(c.index, !g_relay[c.index].load());
+    else setRelay(c.index, c.on);
 }
 
-void appTask(void*) {
-    SensorValues sensors;
-    bool simulate = HMI_SIMULATE_SENSORS;
-    uint32_t lastSim = 0, lastReal = 0;
-    esp_task_wdt_add(nullptr);
-
-    for (;;) {
-        AppMsg m;
-        datalog::tick();  // close finished history slots (10 s / 1 min)
-        if (xQueueReceive(g_appQ, &m, pdMS_TO_TICKS(100)) == pdTRUE) {
-            switch (m.cmd) {
-                case AppCmd::RelayToggle:
-                    if (m.index < RELAY_COUNT) setRelay(m.index, !g_relay[m.index]);
-                    break;
-                case AppCmd::RelaySet: setRelay(m.index, m.flag); break;
-                case AppCmd::Sensors:  // real data (MQTT): simulation off for good
-                    simulate = false;
-                    lastReal = millis();
-                    sensors.stale = false;
-                    sensors.primaryError = m.flag;
-                    if (!isnan(m.v[0])) sensors.primary = m.v[0];
-                    if (!isnan(m.v[1])) sensors.metric1 = m.v[1];
-                    if (!isnan(m.v[2])) sensors.metric2 = m.v[2];
-                    pushSensors(sensors, hmi::SensorState::Ok);
-                    break;
-                case AppCmd::SensorPreview: {  // console "sensor ok|warn|error|loading|stale|sim"
-                    const char* s = m.text;
-                    simulate = strcmp(s, "sim") == 0;
-                    if (strcmp(s, "ok") == 0) hmi::setPrimary(26.4f);
-                    else if (strcmp(s, "warn") == 0) hmi::setPrimary(31.8f);
-                    else if (strcmp(s, "error") == 0) hmi::setPrimary(0, hmi::SensorState::Error);
-                    else if (strcmp(s, "loading") == 0) hmi::setPrimary(0, hmi::SensorState::Loading);
-                    else if (strcmp(s, "stale") == 0) hmi::setPrimary(26.4f, hmi::SensorState::Stale);
-                    break;
-                }
-                case AppCmd::SaveBrightness: g_prefs.putUChar("bright", m.index); break;
-                case AppCmd::SaveAutoDim: g_prefs.putBool("autodim", m.flag); break;
-                case AppCmd::SaveTheme: g_prefs.putUChar("theme", m.index); break;
-            }
-        }
-
-        const uint32_t now = millis();
-        if (simulate && now - g_bootTime > 1500 && (!lastSim || now - lastSim >= 2000)) {
-            // No sensor wired yet: random walk until real data arrives on MQTT_TOPIC_SENSOR.
-            if (!lastSim) sensors = SensorValues{26.4f, 62, 412};
-            lastSim = now;
-            sensors.primary = constrain(sensors.primary + random(-60, 61) / 100.0f, 23.5f, 28.5f);
-            sensors.metric1 = constrain(sensors.metric1 + random(-2, 3), 55.0f, 70.0f);
-            sensors.metric2 = constrain(sensors.metric2 + random(-30, 31), 320.0f, 520.0f);
-            pushSensors(sensors, hmi::SensorState::Ok);
-        }
-        if (!simulate && lastReal && !sensors.stale && now - lastReal > HMI_SENSOR_STALE_MS) {
-            sensors.stale = true;
-            storage::logEvent("Sensor data stale");
-            pushSensors(sensors, hmi::SensorState::Stale);
-        }
-        esp_task_wdt_reset();
-    }
-}
-
-// ===================== net task =====================
-
-WiFiClient g_wifiClient;
-PubSubClient g_mqtt(g_wifiClient);
-
-void mqttCallback(char* topic, byte* payload, unsigned int length) {
-    Serial.printf("MQTT [%s]: %.*s\n", topic, length, (const char*)payload);
-    JsonDocument doc;
-    if (deserializeJson(doc, payload, length)) return;
-
-    AppMsg m{};
-    if (strcmp(topic, MQTT_TOPIC_SENSOR) == 0) {
-        // {"primary":26.4,"metric1":62,"metric2":412}  or  {"error":true}
-        m.cmd = AppCmd::Sensors;
-        m.flag = doc["error"] | false;
-        m.v[0] = doc["primary"].is<float>() ? doc["primary"].as<float>() : NAN;
-        m.v[1] = doc["metric1"].is<float>() ? doc["metric1"].as<float>() : NAN;
-        m.v[2] = doc["metric2"].is<float>() ? doc["metric2"].as<float>() : NAN;
-        postApp(m);
-        return;
-    }
-    if (strcmp(topic, MQTT_TOPIC_COMMAND) != 0) return;
-    if (doc["relay"].is<int>()) {
-        m.cmd = AppCmd::RelaySet;
-        m.index = doc["relay"].as<int>();
-        m.flag = doc["state"] | false;
-        postApp(m);
-    } else if (doc["relays"].is<JsonArray>()) {
-        JsonArray relays = doc["relays"];
-        for (size_t i = 0; i < relays.size() && i < RELAY_COUNT; i++) {
-            postApp(AppMsg{AppCmd::RelaySet, static_cast<uint8_t>(i), relays[i].as<bool>(), {}, {}});
-        }
-    } else if (doc["brightness"].is<int>()) {
-        // 0-255 for backwards compatibility; the HMI works in percent.
-        hmi::setBrightness(map(doc["brightness"].as<int>(), 0, 255, 0, 100));
-    }
-}
-
-void publishState() {
-    if (!g_mqtt.connected()) return;
-    JsonDocument doc;
-    doc["device"] = DEVICE_NAME;
-    doc["type"] = DEVICE_TYPE;
-    doc["fw_version"] = FIRMWARE_VERSION;
-    doc["hw_version"] = HARDWARE_VERSION;
-    doc["uptime"] = (millis() - g_bootTime) / 1000;
-    doc["free_heap"] = ESP.getFreeHeap();
-    doc["min_free_heap"] = g_minFreeHeap.load();
-    doc["wifi_rssi"] = WiFi.RSSI();
-    doc["ip"] = WiFi.localIP().toString();
-    JsonArray relays = doc["relays"].to<JsonArray>();
-    for (int i = 0; i < RELAY_COUNT; i++) {
-        JsonObject r = relays.add<JsonObject>();
-        r["index"] = i;
-        r["state"] = g_relay[i].load();
-        r["last_change"] = (millis() - g_relayChange[i]) / 1000;
-    }
-    String out;
-    serializeJson(doc, out);
-    g_mqtt.publish(MQTT_TOPIC_STATE, out.c_str(), true);
-}
-
-void setupOTA() {
-    ArduinoOTA.setHostname(WIFI_HOSTNAME);
-    ArduinoOTA.setPassword(OTA_PASSWORD);
-    ArduinoOTA.setPort(OTA_PORT);
-    ArduinoOTA.onStart([]() { storage::logEvent("OTA start"); });
-    ArduinoOTA.onError([](ota_error_t e) { storage::logEvent("OTA error %u", e); });
-    ArduinoOTA.begin();
-}
-
-// MQTT with exponential backoff (5..60 s) and a 1 s TCP timeout.
-void maintainMqtt(uint32_t now) {
-    static uint32_t lastTry = 0, retryDelay = MQTT_RECONNECT_INTERVAL;
-    if (!wifimgr::connected() || g_mqtt.connected()) return;
-    if (lastTry && now - lastTry < retryDelay) return;
-    lastTry = now;
-    String id = String(MQTT_CLIENT_ID) + "-" + String(random(0xffff), HEX);
-    if (g_mqtt.connect(id.c_str(), g_mqttUser[0] ? g_mqttUser : nullptr, g_mqttPass[0] ? g_mqttPass : nullptr,
-                       MQTT_TOPIC_AVAILABILITY, 1, true, "offline")) {
-        storage::logEvent("MQTT connected to %s:%u", g_mqttHost, g_mqttPort);
-        g_mqtt.subscribe(MQTT_TOPIC_COMMAND);
-        g_mqtt.subscribe(MQTT_TOPIC_CONFIG);
-        g_mqtt.subscribe(MQTT_TOPIC_SENSOR);
-        g_mqtt.publish(MQTT_TOPIC_AVAILABILITY, "online", true);
-        publishState();
-        retryDelay = MQTT_RECONNECT_INTERVAL;
-    } else {
-        Serial.printf("MQTT connect failed rc=%d, retry in %lus\n", g_mqtt.state(), retryDelay / 1000);
-        retryDelay = min<uint32_t>(retryDelay * 2, 60000);
-    }
-}
-
-// Link, clock and system info for the header / Settings, once a second.
-void feedHmiStatus(uint32_t now) {
-    static uint32_t last = 0;
-    static uint32_t lastSystemInfo = 0;
+void feedStatus(uint32_t now) {
+    static uint32_t last = 0, lastInfo = 0;
+    static bool wasWifi = false, ntpStarted = false;
     if (last && now - last < 1000) return;
     last = now;
-    const bool up = wifimgr::connected();
-    hmi::Link link = hmi::Link::Offline;
-    if (up) link = g_mqtt.connected() ? hmi::Link::Online : hmi::Link::BrokerDown;
-    else if (now - g_bootTime < 20000) link = hmi::Link::Connecting;
-    hmi::setLink(link);
+    const bool wifi = wifimgr::connected();
+    if (wifi && !wasWifi) {
+        configTime(HMI_TZ_OFFSET_SECONDS, 0, "pool.ntp.org", "time.google.com");
+        ntpStarted = true;
+        storage::logEvent("NTP sync requested (TZ+7)");
+    }
+    wasWifi = wifi;
+    if (wifi) hmi::setLink(hmi::Link::Online);
+    else hmi::setLink(espnow::ready() ? hmi::Link::Connecting : hmi::Link::Connecting);
 
     struct tm t;
     char hhmm[6] = "--:--";
-    if (getLocalTime(&t, 0)) strftime(hhmm, sizeof(hhmm), "%H:%M", &t);
+    const bool synced = getLocalTime(&t, 0);
+    if (synced) strftime(hhmm, sizeof(hhmm), "%H:%M", &t);
     hmi::setClock(hhmm);
 
-    hmi::SystemInfo info;
-    if (up) {
+    if (lastInfo && now - lastInfo < 2000) return;
+    lastInfo = now;
+    hmi::SystemInfo info{};
+    const uint8_t ch = wifi ? WiFi.channel() : (g_sdConfig.espnow.channel ? g_sdConfig.espnow.channel : ESPNOW_CHANNEL);
+    info.channel = ch;
+    if (wifi) {
         strlcpy(info.ssid, WiFi.SSID().c_str(), sizeof(info.ssid));
         strlcpy(info.ip, WiFi.localIP().toString().c_str(), sizeof(info.ip));
         info.rssi = WiFi.RSSI();
         strlcpy(info.bssid, WiFi.BSSIDstr().c_str(), sizeof(info.bssid));
-        info.channel = WiFi.channel();
         strlcpy(info.gateway, WiFi.gatewayIP().toString().c_str(), sizeof(info.gateway));
         strlcpy(info.subnet, WiFi.subnetMask().toString().c_str(), sizeof(info.subnet));
         strlcpy(info.dns, WiFi.dnsIP().toString().c_str(), sizeof(info.dns));
+    } else {
+        snprintf(info.ssid, sizeof(info.ssid), "ESP-NOW CH%u", ch);
+        strlcpy(info.ip, "--", sizeof(info.ip));
     }
-    strlcpy(info.mac, WiFi.macAddress().c_str(), sizeof(info.mac));
+    info.espnowReady = espnow::ready();
+    info.espnowNodes = espnow::nodeCount();
+    strlcpy(info.espnowStatus, espnow::statusText(), sizeof(info.espnowStatus));
     strlcpy(info.hostname, WIFI_HOSTNAME, sizeof(info.hostname));
-    strlcpy(info.mqttHost, g_mqttHost, sizeof(info.mqttHost));
-    info.mqttPort = g_mqttPort;
-    info.mqttState = g_mqtt.state();
-    info.mqttAuth = g_mqttUser[0] != 0;
-
+    static char mac[18] = "";
+    if (!mac[0]) strlcpy(mac, WiFi.macAddress().c_str(), sizeof(mac));
+    strlcpy(info.mac, mac, sizeof(info.mac));
     const uint32_t heap = ESP.getFreeHeap();
     if (heap < g_minFreeHeap) g_minFreeHeap = heap;
     info.heapKB = heap / 1024;
@@ -305,215 +112,198 @@ void feedHmiStatus(uint32_t now) {
     info.psramKB = ESP.getFreePsram() / 1024;
     info.psramTotalKB = ESP.getPsramSize() / 1024;
     info.flashMB = ESP.getFlashChipSize() / (1024 * 1024);
-    static const uint32_t appKB = ESP.getSketchSize() / 1024;  // hashes the image: once
+    static const uint32_t appKB = ESP.getSketchSize() / 1024;
     info.appKB = appKB;
     info.appSlotKB = ESP.getFreeSketchSpace() / 1024;
-
     info.uptimeS = (now - g_bootTime) / 1000;
     info.resetReason = static_cast<uint8_t>(esp_reset_reason());
-    info.timeSynced = getLocalTime(&t, 0);
-    if (info.timeSynced) strftime(info.date, sizeof(info.date), "%d/%m/%Y", &t);
+    info.timeSynced = synced;
+    if (synced) strftime(info.date, sizeof(info.date), "%d/%m/%Y", &t);
     strlcpy(info.chip, ESP.getChipModel(), sizeof(info.chip));
     info.chipRev = ESP.getChipRevision();
     info.cores = ESP.getChipCores();
     info.cpuMHz = ESP.getCpuFreqMHz();
     strlcpy(info.sdk, ESP.getSdkVersion(), sizeof(info.sdk));
-    // RSSI and heap can vary every second. The Settings page only needs a
-    // human-readable refresh every few seconds; avoid repeated layout work.
-    if (!lastSystemInfo || now - lastSystemInfo >= 5000) {
-        lastSystemInfo = now;
-        hmi::setSystemInfo(info);
-    }
+    hmi::setSystemInfo(info);
 }
 
-void netTask(void*) {
-    g_wifiClient.setTimeout(1);  // bound the blocking TCP connect
-    g_mqtt.setServer(g_mqttHost, g_mqttPort);
-    g_mqtt.setCallback(mqttCallback);
-    g_mqtt.setBufferSize(2048);
-    g_mqtt.setKeepAlive(MQTT_KEEPALIVE);
-    g_mqtt.setSocketTimeout(2);
-    wifimgr::begin(g_sdConfig);
+hmi::EspNowUiConfig espNowUiConfig();
+bool parseMacUi(const char* text, uint8_t mac[6]);
+void applyEspNowUiConfig(const hmi::EspNowUiConfig& ui);
 
-    bool wasUp = false, otaStarted = false;
+void appTask(void*) {
+#if HMI_SIMULATE_SENSORS
+    uint32_t lastSim = 0;
+    float sim[3] = {25.8f, 58.0f, 180.0f};
+    auto drift = [](float& v, float lo, float hi, float step) {
+        v += ((float)random(-100, 101) / 100.0f) * step;
+        if (v < lo) v = lo; if (v > hi) v = hi;
+    };
+#endif
     for (;;) {
-        NetMsg m;
-        if (xQueueReceive(g_netQ, &m, pdMS_TO_TICKS(20)) == pdTRUE) {
-            if (m.cmd == NetCmd::Scan) wifimgr::startScan();
-            else wifimgr::join(m.ssid, m.pass);
-        }
-        const uint32_t now = millis();
-        wifimgr::loop();
-
-        const bool up = wifimgr::connected();
-        if (up != wasUp) {
-            wasUp = up;
-            if (up) {
-                storage::logEvent("Wi-Fi connected: %s %s RSSI %d", WiFi.SSID().c_str(),
-                                  WiFi.localIP().toString().c_str(), WiFi.RSSI());
-                configTime(HMI_TZ_OFFSET_SECONDS, 0, "pool.ntp.org", "time.google.com");
-                if (!otaStarted) {
-                    setupOTA();
-                    otaStarted = true;
-                }
-            } else {
-                storage::logEvent("Wi-Fi disconnected");
+        AppMsg m;
+        while (xQueueReceive(g_appQ, &m, 0) == pdTRUE) {
+            if (m.cmd == AppCmd::RelayToggle) setRelay(m.index, !g_relay[m.index].load());
+            else if (m.cmd == AppCmd::RelaySet) setRelay(m.index, m.flag);
+            else if (m.cmd == AppCmd::SaveBrightness) g_prefs.putUChar("bright", m.index);
+            else if (m.cmd == AppCmd::SaveAutoDim) g_prefs.putBool("autodim", m.flag);
+            else if (m.cmd == AppCmd::SaveTheme) g_prefs.putUChar("theme", m.index);
+            else if (m.cmd == AppCmd::SaveDark) g_prefs.putBool("dark", m.flag);
+            else if (m.cmd == AppCmd::SaveEspNow) {
+                hmi::EspNowUiConfig ecfg{};
+                if (g_espnowCfgQ && xQueueReceive(g_espnowCfgQ, &ecfg, 0) == pdTRUE) applyEspNowUiConfig(ecfg);
             }
         }
-        maintainMqtt(now);
-        g_mqtt.loop();
-        if (g_publishPending.exchange(false)) publishState();
-        if (otaStarted) ArduinoOTA.handle();
-        feedHmiStatus(now);
+        EspCmd ec;
+        while (xQueueReceive(g_espQ, &ec, 0) == pdTRUE) applyEsp(ec);
+
+        const uint32_t now = millis();
+#if HMI_SIMULATE_SENSORS
+        if (now - lastSim > 2000) {
+            lastSim = now;
+            drift(sim[0], 22.0f, 33.0f, 0.4f); drift(sim[1], 40.0f, 80.0f, 1.5f); drift(sim[2], 60.0f, 450.0f, 12.0f);
+            hmi::setPrimary(sim[0], hmi::SensorState::Ok);
+            hmi::setMetric(0, sim[1], hmi::SensorState::Ok);
+            hmi::setMetric(1, sim[2], hmi::SensorState::Ok);
+        }
+#endif
+        // Rotate greeting on the header room title every 30 s, never repeat back-to-back.
+        static uint32_t lastGreeting = 0;
+        static int8_t lastIdx = -1;
+        if (!lastGreeting || now - lastGreeting >= 30000) {
+            lastGreeting = now;
+            static const char* const greetings[] = {
+                "Xin chào, chúc một ngày tốt lành",
+                "Chào buổi sáng, hãy tràn đầy năng lượng",
+                "Chào buổi chiều, một buổi thư giãn",
+                "Chào buổi tối, nghỉ ngơi đầy đủ",
+                "Hôm nay là một ngày mới",
+                "Chúc sức khỏe và hạnh phúc",
+                "Tận hưởng từng khoảnh khắc đẹp",
+                "Hãy tin vào chính mình",
+                "Mỗi giây đều có giá trị",
+                "Chúc bạn luôn vui vẻ",
+            };
+            constexpr size_t kGreetCount = sizeof(greetings) / sizeof(greetings[0]);
+            int8_t idx = random(0, (int)kGreetCount);
+            while (kGreetCount > 1 && idx == lastIdx) idx = random(0, (int)kGreetCount);
+            lastIdx = idx;
+            hmi::setRoomName(greetings[idx]);
+        }
+        feedStatus(now);
+        espnow::loop();
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
 
-// ===================== console task =====================
-
-void printTasks() {
-    static const char* const names[] = {"ui", "app", "net", "devices", "storage", "console"};
-    Serial.printf("heap %u KB (min %u KB), psram free %u KB\n", ESP.getFreeHeap() / 1024,
-                  ESP.getMinFreeHeap() / 1024, ESP.getFreePsram() / 1024);
-    for (const char* n : names) {
-        TaskHandle_t h = xTaskGetHandle(n);
-        if (h) Serial.printf("  %-8s stack free %5u B  prio %u\n", n, uxTaskGetStackHighWaterMark(h), uxTaskPriorityGet(h));
-    }
-}
-
-// "shot" (tools/screenshot.py), "shot sd", "info"/"tasks", "toggle <1..3>",
-// "page <0..3>", "scroll <px>", "drag x y0 y1 [ms]", "devices", "wifi" (open + scan), "theme <0..2>",
-// "sensor ok|warn|error|loading|stale|sim", "bench [psram|hybrid]" (UI build/redraw timing).
 void consoleTask(void*) {
-    char line[80];
-    uint8_t len = 0;
+    char line[120]; uint8_t len = 0;
     for (;;) {
         while (Serial.available()) {
             const char c = Serial.read();
-            if (c != '\n' && c != '\r') {
-                if (len < sizeof(line) - 1) line[len++] = c;
-                continue;
+            if (c != '\n' && c != '\r') { if (len < sizeof(line) - 1) line[len++] = c; continue; }
+            line[len] = 0; len = 0; if (!line[0]) continue;
+            else if (!strcmp(line, "espnow")) espnow::print(Serial);
+            else if (!strncmp(line, "espnow mac ", 11)) {
+                storage::EspNowConfig ec = g_sdConfig.espnow;
+                ec.enabled = true; ec.channel = ec.channel ? ec.channel : ESPNOW_CHANNEL;
+                if (!ec.pmk[0]) strlcpy(ec.pmk, ESPNOW_PMK, sizeof(ec.pmk));
+                if (!ec.lmk[0]) strlcpy(ec.lmk, ESPNOW_LMK, sizeof(ec.lmk));
+                unsigned v[6];
+                if (sscanf(line + 11, "%02x:%02x:%02x:%02x:%02x:%02x", &v[0],&v[1],&v[2],&v[3],&v[4],&v[5]) == 6) {
+                    for (int i=0;i<6;i++) ec.peers[0][i]=(uint8_t)v[i]; ec.peerCount=1; g_sdConfig.espnow=ec;
+                    bool ok = storage::saveEspNowConfig(ec);
+                    espnow::begin(ec);
+                    Serial.printf("ESP-NOW master MAC saved=%d %s (restart not required)\n", ok, line+11);
+                } else Serial.println("usage: espnow mac AA:BB:CC:DD:EE:FF");
             }
-            line[len] = 0;
-            len = 0;
-            if (!line[0]) continue;
-            if (strcmp(line, "shot") == 0) {
-                // Core log_x() from other tasks would corrupt the binary stream.
-                Serial.setDebugOutput(false);
-                hmi::screenshot(Serial);
-                Serial.flush();
-                Serial.setDebugOutput(true);
-            } else if (strncmp(line, "shot fb", 7) == 0) {  // "shot fb [ms]": real framebuffer
-                Serial.setDebugOutput(false);
-                hmi::screenshotFramebuffer(Serial, line[7] ? atoi(line + 8) : 0);
-                Serial.flush();
-                Serial.setDebugOutput(true);
-            } else if (strcmp(line, "shot sd") == 0) {
-                storage::requestScreenshot();
-            } else if (strcmp(line, "sd tree") == 0) {
-                storage::requestTree();
-            } else if (strcmp(line, "sd wipe") == 0) {
-                storage::requestWipe();
-            } else if (strcmp(line, "sd restore") == 0) {
-                storage::requestRestore();
-            } else if (strcmp(line, "history save") == 0) {
-                storage::requestHistorySave();
-            } else if (strcmp(line, "info") == 0 || strcmp(line, "tasks") == 0) {
-                printTasks();
-            } else if (strncmp(line, "toggle ", 7) == 0) {
-                postApp(AppMsg{AppCmd::RelayToggle, static_cast<uint8_t>(atoi(line + 7) - 1), false, {}, {}});
-            } else if (strncmp(line, "page ", 5) == 0) {
-                hmi::showPage(atoi(line + 5));
-            } else if (strncmp(line, "scroll ", 7) == 0) {
-                hmi::scrollPage(atoi(line + 7));
-            } else if (strncmp(line, "drag ", 5) == 0) {
-                int x = 240, y0 = 300, y1 = 120, ms = 300;  // "drag x y0 y1 [ms]"
-                sscanf(line + 5, "%d %d %d %d", &x, &y0, &y1, &ms);
-                hmi::injectDrag(x, y0, y1, ms);
-            } else if (strncmp(line, "detail ", 7) == 0) {
-                hmi::showDetail(atoi(line + 7));
-            } else if (strncmp(line, "bench", 5) == 0) {
-                hmi::benchmark(strstr(line, "psram") ? 1 : strstr(line, "hybrid") ? 2 : 0);
-            } else if (strncmp(line, "view ", 5) == 0) {
-                hmi::previewFile(line + 5);
-            } else if (strncmp(line, "kbd", 3) == 0) {  // "kbd" secured, "kbd open" open network
-                hmi::previewKeyboard(strstr(line, "open") != nullptr);
-            } else if (strcmp(line, "devices") == 0) {
-                tasmota::print(Serial);
-            } else if (strncmp(line, "wifi 11b ", 9) == 0) {
-                wifimgr::retry11b(line + 9);
-            } else if (strncmp(line, "wifi mac ", 9) == 0) {  // "wifi mac <ssid>": retry with another MAC
-                wifimgr::retryWithNewMac(line + 9);
-            } else if (strncmp(line, "wifi bssid ", 11) == 0) {  // "wifi bssid aa:bb:cc:dd:ee:ff <ch> <ssid>"
-                unsigned b[6];
-                int ch = 0, off = 0;
-                if (sscanf(line + 11, "%x:%x:%x:%x:%x:%x %d %n", &b[0], &b[1], &b[2], &b[3], &b[4], &b[5], &ch, &off) >= 7) {
-                    const uint8_t bssid[6] = {(uint8_t)b[0], (uint8_t)b[1], (uint8_t)b[2], (uint8_t)b[3], (uint8_t)b[4], (uint8_t)b[5]};
-                    wifimgr::joinBssid(line + 11 + off, bssid, ch);
-                }
-            } else if (strncmp(line, "wifi join ", 10) == 0) {  // saved network, stored password
-                NetMsg m{NetCmd::Join, {}, {}};
-                strlcpy(m.ssid, line + 10, sizeof(m.ssid));
-                strlcpy(m.pass, wifimgr::kUseSaved, sizeof(m.pass));  // ignored if the scan saw it open
-                postNet(m);
-            } else if (strcmp(line, "wifi") == 0) {
-                hmi::showPage(3);
-                postNet(NetMsg{NetCmd::Scan, {}, {}});
-            } else if (strncmp(line, "theme ", 6) == 0) {
-                hmi::setTheme(atoi(line + 6));
-            } else if (strncmp(line, "sensor ", 7) == 0) {
-                AppMsg m{AppCmd::SensorPreview, 0, false, {}, {}};
-                strlcpy(m.text, line + 7, sizeof(m.text));
-                postApp(m);
-            } else {
-                Serial.printf("? %s\n", line);
-            }
+            else if (!strcmp(line, "info")) Serial.printf("heap %u psram %u espnow %s\n", ESP.getFreeHeap(), ESP.getFreePsram(), espnow::statusText());
+            else if (!strncmp(line, "toggle ", 7)) postApp(AppMsg{AppCmd::RelayToggle, (uint8_t)(atoi(line + 7) - 1), false});
+            else Serial.printf("? %s\n", line);
         }
         vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
 
-// ===================== HMI callbacks (run in the ui task: post only) =====================
-
-void onRelayToggle(uint8_t i) { postApp(AppMsg{AppCmd::RelayToggle, i, false, {}, {}}); }
-void onBrightnessChanged(uint8_t pct) { postApp(AppMsg{AppCmd::SaveBrightness, pct, false, {}, {}}); }
-void onAutoDimChanged(bool on) { postApp(AppMsg{AppCmd::SaveAutoDim, 0, on, {}, {}}); }
-void onThemeChanged(uint8_t i) { postApp(AppMsg{AppCmd::SaveTheme, i, false, {}, {}}); }
-void onBacklight(uint8_t pct) {
-    pct = constrain(pct, 0, 100);
-    display.setBrightness(map(pct, 0, 100, HMI_BACKLIGHT_MIN_DUTY, 255));
+void netTask(void*) {
+    wifimgr::begin(g_sdConfig);
+    esp_task_wdt_add(nullptr);
+    for (;;) {
+        NetMsg n;
+        while (g_netQ && xQueueReceive(g_netQ, &n, 0) == pdTRUE) {
+            if (n.cmd == NetCmd::Scan) wifimgr::startScan();
+            else if (n.cmd == NetCmd::Join) wifimgr::join(n.ssid, n.pass);
+        }
+        wifimgr::loop();
+        esp_task_wdt_reset();
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
 }
-void onWifiScan() { postNet(NetMsg{NetCmd::Scan, {}, {}}); }
+
+void onRelayToggle(uint8_t i) { postApp(AppMsg{AppCmd::RelayToggle, i, false}); }
+void onBrightnessChanged(uint8_t pct) { postApp(AppMsg{AppCmd::SaveBrightness, pct, false}); }
+void onAutoDimChanged(bool on) { postApp(AppMsg{AppCmd::SaveAutoDim, 0, on}); }
+void onThemeChanged(uint8_t i) { postApp(AppMsg{AppCmd::SaveTheme, i, false}); }
+void onDarkModeChanged(bool on) { postApp(AppMsg{AppCmd::SaveDark, 0, on}); }
+void onBacklight(uint8_t pct) { pct = constrain(pct, 0, 100); display.setBrightness(map(pct, 0, 100, HMI_BACKLIGHT_MIN_DUTY, 255)); }
+void onWifiScan() { if (g_netQ) { NetMsg m{NetCmd::Scan, {}, {}}; xQueueSend(g_netQ, &m, 0); } }
 void onWifiJoin(const char* ssid, const char* pass) {
+    if (!g_netQ) return;
     NetMsg m{NetCmd::Join, {}, {}};
-    strlcpy(m.ssid, ssid, sizeof(m.ssid));
-    strlcpy(m.pass, pass, sizeof(m.pass));
-    postNet(m);
+    strlcpy(m.ssid, ssid ? ssid : "", sizeof(m.ssid));
+    strlcpy(m.pass, pass ? pass : "", sizeof(m.pass));
+    xQueueSend(g_netQ, &m, 0);
 }
-void onFirmwareUpdate() { storage::requestFirmwareUpdate(); }
-void onDeviceToggle(uint8_t device, uint8_t channel) { tasmota::toggle(device, channel); }
-void onFileList(const char* path) { storage::requestList(path); }
-void onFileRead(const char* path) { storage::requestRead(path); }
-void onFileDelete(const char* path) { storage::requestDelete(path); }
 
-// Tasmota devices: /config.json "tasmota" if present, else config.h.
-uint8_t deviceList(hmi::DeviceInfo* out) {
-    if (g_sdConfig.tasmotaCount) {
-        memcpy(out, g_sdConfig.tasmota, sizeof(hmi::DeviceInfo) * g_sdConfig.tasmotaCount);
-        return g_sdConfig.tasmotaCount;
+hmi::EspNowUiConfig espNowUiConfig() {
+    hmi::EspNowUiConfig c{};
+    c.enabled = g_sdConfig.espnow.enabled;
+    c.channel = g_sdConfig.espnow.channel ? g_sdConfig.espnow.channel : ESPNOW_CHANNEL;
+    strlcpy(c.pmk, g_sdConfig.espnow.pmk, sizeof(c.pmk));
+    strlcpy(c.lmk, g_sdConfig.espnow.lmk, sizeof(c.lmk));
+    if (g_sdConfig.espnow.peerCount > 0) {
+        const uint8_t* m = g_sdConfig.espnow.peers[0];
+        snprintf(c.masterMac, sizeof(c.masterMac), "%02X:%02X:%02X:%02X:%02X:%02X", m[0], m[1], m[2], m[3], m[4], m[5]);
+        if (!strcmp(c.masterMac, "00:00:00:00:00:00")) c.masterMac[0] = 0;
     }
-    const struct { const char* name; const char* key; uint8_t channels; } defaults[] = {
-        {TASMOTA_1_NAME, TASMOTA_1_KEY, TASMOTA_1_CHANNELS},
-        {TASMOTA_2_NAME, TASMOTA_2_KEY, TASMOTA_2_CHANNELS},
-    };
-    uint8_t n = 0;
-    for (const auto& d : defaults) {
-        out[n] = hmi::DeviceInfo{};
-        strlcpy(out[n].name, d.name, sizeof(out[n].name));
-        strlcpy(out[n].key, d.key, sizeof(out[n].key));
-        out[n].channels = d.channels;
-        n++;
+    if (!c.masterMac[0]) strlcpy(c.masterMac, ESPNOW_MASTER_MAC, sizeof(c.masterMac));
+    return c;
+}
+
+bool parseMacUi(const char* text, uint8_t mac[6]) {
+    unsigned v[6] = {};
+    if (!text) return false;
+    if (sscanf(text, "%02x:%02x:%02x:%02x:%02x:%02x", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) != 6 &&
+        sscanf(text, "%02X:%02X:%02X:%02X:%02X:%02X", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) != 6) return false;
+    for (int i = 0; i < 6; i++) mac[i] = (uint8_t)v[i];
+    return true;
+}
+
+void applyEspNowUiConfig(const hmi::EspNowUiConfig& ui) {
+    storage::EspNowConfig ec = g_sdConfig.espnow;
+    ec.enabled = ui.enabled;
+    ec.channel = ui.channel ? ui.channel : ESPNOW_CHANNEL;
+    if (ui.pmk[0]) strlcpy(ec.pmk, ui.pmk, sizeof(ec.pmk));
+    if (ui.lmk[0]) strlcpy(ec.lmk, ui.lmk, sizeof(ec.lmk));
+    if (!ec.pmk[0]) strlcpy(ec.pmk, ESPNOW_PMK, sizeof(ec.pmk));
+    if (!ec.lmk[0]) strlcpy(ec.lmk, ESPNOW_LMK, sizeof(ec.lmk));
+    uint8_t mac[6];
+    if (parseMacUi(ui.masterMac, mac)) {
+        for (int i = 0; i < 6; i++) ec.peers[0][i] = mac[i];
+        ec.peerCount = 1;
     }
-    return n;
+    g_sdConfig.espnow = ec;
+    const bool ok = storage::saveEspNowConfig(ec);
+    espnow::begin(ec);
+    hmi::setEspNowUiConfig(espNowUiConfig());
+    storage::logEvent("ESP-NOW config from UI saved=%d mac=%s ch=%u", ok, ui.masterMac, ec.channel);
+    Serial.printf("ESP-NOW config saved=%d mac=%s ch=%u\n", ok, ui.masterMac, ec.channel);
+}
+
+void onEspNowConfigSave(const hmi::EspNowUiConfig& cfg) {
+    g_pendingEspNowUi = cfg;
+    if (g_espnowCfgQ) xQueueSend(g_espnowCfgQ, &g_pendingEspNowUi, 0);
+    postApp(AppMsg{AppCmd::SaveEspNow, 0, false});
 }
 
 }  // namespace
@@ -521,73 +311,53 @@ uint8_t deviceList(hmi::DeviceInfo* out) {
 void setup() {
     Serial.begin(SERIAL_BAUDRATE);
     delay(100);
-    Serial.println("\n\n=== ESP32-4848S040 Smart Home Panel ===");
-    Serial.printf("Firmware: %s  Hardware: %s\n", FIRMWARE_VERSION, HARDWARE_VERSION);
-    Serial.printf("Reset reason: %d\n", (int)esp_reset_reason());  // 1=power-on/EN, 4=panic, 6/7=watchdog, 9=brownout
+    Serial.printf("\n=== ESP32-4848S040 ESP-NOW Slave Panel ===\nFW %s reset=%d\n", FIRMWARE_VERSION, (int)esp_reset_reason());
     g_bootTime = millis();
 
-    for (int i = 0; i < RELAY_COUNT; i++) {
-        pinMode(kRelayPins[i], OUTPUT);
-        digitalWrite(kRelayPins[i], LOW);  // Active HIGH relay, OFF = LOW
-        g_relay[i] = false;
-        g_relayChange[i] = millis();
-    }
+    for (int i = 0; i < RELAY_COUNT; i++) { pinMode(kRelayPins[i], OUTPUT); digitalWrite(kRelayPins[i], LOW); g_relay[i] = false; g_relayChange[i] = millis(); }
 
     if (!display.begin()) Serial.println("!!! display.begin() FAILED !!!");
-    // Backlight: Light_PWM attached GPIO38 to an LEDC channel in begin().  Do
-    // not pinMode()/digitalWrite() it afterwards: that detaches the pin from
-    // LEDC, leaves it stuck at 100 % and the brightness slider does nothing.
-    display.setBrightness(255);  // until the saved level arrives via the UI
+    display.setBrightness(255);
 
-    // PSRAM history/event rings first: storage::begin() restores into them.
     datalog::begin();
-    // SD after the display: SCK/MOSI are shared with the ST7701 init bus.
     storage::begin();
-    storage::logEvent("Boot fw=%s reset=%d", FIRMWARE_VERSION, (int)esp_reset_reason());
-    if (storage::loadConfig(g_sdConfig)) {
-        if (g_sdConfig.mqttHost[0]) strlcpy(g_mqttHost, g_sdConfig.mqttHost, sizeof(g_mqttHost));
-        if (g_sdConfig.mqttPort) g_mqttPort = g_sdConfig.mqttPort;
-        if (g_sdConfig.mqttUser[0]) strlcpy(g_mqttUser, g_sdConfig.mqttUser, sizeof(g_mqttUser));
-        if (g_sdConfig.mqttPass[0]) strlcpy(g_mqttPass, g_sdConfig.mqttPass, sizeof(g_mqttPass));
-        hmi::setRoomName(g_sdConfig.room);
-    }
+    storage::loadConfig(g_sdConfig);
+    g_sdConfig.espnow.enabled = true;
+    if (!g_sdConfig.espnow.channel) g_sdConfig.espnow.channel = ESPNOW_CHANNEL;
+    if (!g_sdConfig.espnow.pmk[0]) strlcpy(g_sdConfig.espnow.pmk, ESPNOW_PMK, sizeof(g_sdConfig.espnow.pmk));
+    if (!g_sdConfig.espnow.lmk[0]) strlcpy(g_sdConfig.espnow.lmk, ESPNOW_LMK, sizeof(g_sdConfig.espnow.lmk));
+    if (g_sdConfig.espnow.peerCount == 0) g_sdConfig.espnow.peerCount = 1;  // parsed from ESPNOW_MASTER_MAC in begin()
 
     g_prefs.begin("hmi", false);
     hmi::setBrightness(g_prefs.getUChar("bright", 80));
     hmi::setAutoDim(g_prefs.getBool("autodim", true));
     hmi::setTheme(g_prefs.getUChar("theme", 0));
+    hmi::setDarkMode(g_prefs.getBool("dark", true));
+    hmi::setLink(hmi::Link::Connecting);
 
-    // Make the task watchdog fatal (10 s): a hung ui/app task reboots instead of freezing.
     esp_task_wdt_init(10, true);
+    g_appQ = xQueueCreate(24, sizeof(AppMsg));
+    g_espQ = xQueueCreate(24, sizeof(EspCmd));
+    g_espnowCfgQ = xQueueCreate(4, sizeof(hmi::EspNowUiConfig));
+    g_netQ = xQueueCreate(8, sizeof(NetMsg));
+    espnow::setCommandQueue(g_espQ);
 
-    g_appQ = xQueueCreate(16, sizeof(AppMsg));
-    g_netQ = xQueueCreate(4, sizeof(NetMsg));
-
-    hmi::Callbacks cb;
-    cb.relayToggle = onRelayToggle;
-    cb.brightnessChanged = onBrightnessChanged;
-    cb.autoDimChanged = onAutoDimChanged;
-    cb.themeChanged = onThemeChanged;
-    cb.backlight = onBacklight;
-    cb.wifiScan = onWifiScan;
-    cb.wifiJoin = onWifiJoin;
-    cb.firmwareUpdate = onFirmwareUpdate;
-    cb.deviceToggle = onDeviceToggle;
-    cb.fileList = onFileList;
-    cb.fileRead = onFileRead;
-    cb.fileDelete = onFileDelete;
-    static hmi::DeviceInfo devices[hmi::kMaxDevices];
-    const uint8_t deviceCount = deviceList(devices);
-    hmi::configureDevices(devices, deviceCount);  // the Control page is built for these
-    hmi::begin(display, cb);  // "ui" task, core 1
-    tasmota::start(devices, deviceCount, g_sdConfig.hasTasmotaApi ? g_sdConfig.tasmotaApi : TASMOTA_API_URL);
-
+    hmi::Callbacks cb{};
+    cb.relayToggle = onRelayToggle; cb.brightnessChanged = onBrightnessChanged; cb.autoDimChanged = onAutoDimChanged;
+    cb.themeChanged = onThemeChanged; cb.darkModeChanged = onDarkModeChanged; cb.backlight = onBacklight;
+    cb.wifiScan = onWifiScan; cb.wifiJoin = onWifiJoin;
+    cb.espnowConfigSave = onEspNowConfigSave;
+    hmi::setEspNowUiConfig(espNowUiConfig());
+    hmi::begin(display, cb);
     storage::start();
-    xTaskCreatePinnedToCore(appTask, "app", 4 * 1024, nullptr, 4, nullptr, 1);
+
     xTaskCreatePinnedToCore(netTask, "net", 8 * 1024, nullptr, 2, nullptr, 0);
-    xTaskCreatePinnedToCore(consoleTask, "console", 4 * 1024, nullptr, 1, nullptr, 0);
-    Serial.println("Tasks started: ui app net devices storage console");
+    espnow::begin(g_sdConfig.espnow);
+    espnow::loop();
+
+    xTaskCreatePinnedToCore(appTask, "app", 5 * 1024, nullptr, 2, nullptr, 1);
+    xTaskCreatePinnedToCore(consoleTask, "console", 3 * 1024, nullptr, 1, nullptr, 0);
+    Serial.printf("Ready: Wi-Fi manager + ESP-NOW slave. master=%s\n", ESPNOW_MASTER_MAC);
 }
 
-// Everything runs in dedicated tasks; free the Arduino loop task.
 void loop() { vTaskDelete(nullptr); }
