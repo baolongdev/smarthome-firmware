@@ -14,20 +14,23 @@ const lv_style_prop_t kPressProps[] = {LV_STYLE_BG_COLOR, LV_STYLE_PROP_INV};
 
 const Palette kPalettes[kPaletteCount] = {
     // name     accent    accent2   info      lamp      success   warning   error
-    {"Lime",   0xC5F82A, 0x9B87FF, 0x4DA3FF, 0xFFC94D, 0x3DDC97, 0xFF9F1C, 0xFF4D5E},
-    {"Ember",  0xFF6B2C, 0xB794FF, 0x4DA3FF, 0xFFD166, 0x3DDC97, 0xFFD23F, 0xFF3B4E},
-    {"Cobalt", 0x4C7DFF, 0xC084FC, 0x38D9F5, 0xFFC94D, 0x3DDC97, 0xFFB020, 0xFF4D5E},
-    // HCMUT brand blue #1488DB (brand guide p.04) as the signature colour.
-    {"Bách Khoa", 0x1488DB, 0xA78BFA, 0x5AC8FA, 0xFFC94D, 0x3DDC97, 0xFF9F1C, 0xFF4D5E},
+    // Nova / Novaland: green brand accent, Nova web blue info, neutral dark base.
+    {"Nova",   0x00B85C, 0x2F80ED, 0x4DA3FF, 0xFFC94D, 0x27AE60, 0xF2B45C, 0xEB5757},
+    {"Ocean",  0x2F80ED, 0x00B85C, 0x38D9F5, 0xFFC94D, 0x27AE60, 0xF2B45C, 0xEB5757},
+    {"Ember",  0xFF6B2C, 0xB794FF, 0x4DA3FF, 0xFFD166, 0x27AE60, 0xF2B45C, 0xEB5757},
+    {"Lime",   0xC5F82A, 0x9B87FF, 0x4DA3FF, 0xFFC94D, 0x27AE60, 0xFF9F1C, 0xEB5757},
 };
 
 namespace {
 uint8_t s_palette = 0;
+bool s_dark = true;
 bool s_stylesReady = false;
 }  // namespace
 
 void setPalette(uint8_t index) { s_palette = index < kPaletteCount ? index : 0; }
 const Palette& palette() { return kPalettes[s_palette]; }
+void setDark(bool on) { s_dark = on; }
+bool dark() { return s_dark; }
 
 void init() {
     if (s_stylesReady) {  // palette switch: drop the old property lists first

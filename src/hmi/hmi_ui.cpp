@@ -25,7 +25,7 @@ using namespace theme;
 enum Page : uint8_t { P_HOME, P_CONTROL, P_SETTINGS, P_WIFI, P_DETAIL, P_FILES, P_FILEVIEW, P_COUNT };
 
 // Detail pages opened from Settings rows.
-enum Topic : uint8_t { T_NET, T_MQTT, T_MEMORY, T_UPTIME, T_SD, T_CONFIG, T_ABOUT, T_HISTORY, T_EVENTS, T_COUNT };
+enum Topic : uint8_t { T_WIFI, T_ESPNOW, T_MEMORY, T_UPTIME, T_SD, T_CONFIG, T_ABOUT, T_HISTORY, T_EVENTS, T_COUNT };
 constexpr uint8_t kNavCount = 3;  // P_WIFI is a sub-page of Settings
 
 struct Ui {
@@ -56,8 +56,14 @@ struct Ui {
     int32_t shown = 0;  // primary value ×10 currently drawn
     // control
     lv_obj_t* relayIcon[RELAY_COUNT];
+    lv_obj_t* relayDot[RELAY_COUNT];
     lv_obj_t* relayStatus[RELAY_COUNT];
     lv_obj_t* relaySwitch[RELAY_COUNT];
+    lv_obj_t* relayCard[RELAY_COUNT];
+    lv_obj_t* ctrlClock = nullptr;
+    lv_obj_t* ctrlHum = nullptr;
+    lv_obj_t* ctrlHumState = nullptr;
+    lv_obj_t* ctrlPower = nullptr;
     lv_obj_t* devStatus[kMaxDevices];
     lv_obj_t* devRow[kMaxDevices][kMaxChannels];
     lv_obj_t* devIcon[kMaxDevices][kMaxChannels];
@@ -66,10 +72,13 @@ struct Ui {
     lv_obj_t* slider;
     lv_obj_t* sliderValue;
     // settings
+    lv_obj_t* modeSwitch;
+    lv_obj_t* modeLabel;
     lv_obj_t* dimSwitch;
     lv_obj_t* sysWifi;
     lv_obj_t* sysMqtt;
     lv_obj_t* sysIp;
+    lv_obj_t* sysEspnow;
     lv_obj_t* sysMem;
     lv_obj_t* sysUptime;
     lv_obj_t* sdCard;
@@ -113,18 +122,30 @@ struct Ui {
     // detail page
     lv_obj_t* detailTitle;
     lv_obj_t* detailList;
-    uint8_t detailTopic = T_NET;
+    uint8_t detailTopic = T_ESPNOW;
     bool joinSecure = true;
     bool joinSaved = false;     // using the stored password (no keyboard)
     lv_obj_t* openNoteTitle;
     lv_obj_t* openNoteText;
     lv_obj_t* openNoteIcon;
     lv_obj_t* otherPass;        // "Nhập mật khẩu khác" on a saved network
+    // ESP-NOW config editor (full-screen overlay)
+    lv_obj_t* espnowSheet = nullptr;
+    lv_obj_t* espnowMac = nullptr;
+    lv_obj_t* espnowChannel = nullptr;
+    lv_obj_t* espnowPmk = nullptr;
+    lv_obj_t* espnowLmk = nullptr;
+    lv_obj_t* espnowStatus = nullptr;
+    lv_obj_t* espnowKb = nullptr;
+    lv_obj_t* espnowFocus = nullptr;
     // firmware update overlay
     lv_obj_t* update;
     lv_obj_t* updateBar;
     lv_obj_t* updateText;
-    // screensaver: BK lockup shown while dimmed
+    lv_timer_t* acAnim;
+    lv_timer_t* fanAnim;
+    lv_timer_t* lightAnim;
+    // screensaver: Nova lockup shown while dimmed
     lv_obj_t* saver;
     lv_obj_t* saverLockup;
     lv_timer_t* saverTimer;
@@ -256,13 +277,16 @@ void buildHeader(lv_obj_t* scr) {
     lv_obj_t* hdr = box(scr);
     lv_obj_set_size(hdr, 480, kContentY);
     ui.header = hdr;
-    lv_obj_t* logo = lv_image_create(hdr);  // BK mark before the room name
-    lv_image_set_src(logo, &bk_logo_32);
-    lv_obj_set_pos(logo, kMargin, kMargin);  // logo edge 16 px from the border
+    lv_obj_t* logo = lv_image_create(hdr);  // Nova mark before the room name
+    lv_image_set_src(logo, &nova_logo_32);
+    lv_obj_set_pos(logo, kMargin, 14);  // 27x36 mark, centred in 64 px header
     ui.name = label(hdr, &hmi_font_16_sb, text(), s_snap.room);
-    lv_obj_set_pos(ui.name, kMargin + 42, 12);
+    lv_obj_set_pos(ui.name, kMargin + 37, 12);
+    lv_obj_set_width(ui.name, 480 - (kMargin + 37) - kMargin - 20);
+    lv_label_set_long_mode(ui.name, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    lv_obj_set_style_text_align(ui.name, LV_TEXT_ALIGN_LEFT, 0);
     ui.caption = label(hdr, &hmi_font_13_r, muted(), "Đang kết nối…");
-    lv_obj_set_pos(ui.caption, kMargin + 42, 34);
+    lv_obj_set_pos(ui.caption, kMargin + 37, 34);
 
     lv_obj_t* right = flexRow(hdr, 12);
     lv_obj_set_height(right, 40);
@@ -287,9 +311,9 @@ void selectPage(uint8_t p) {
     // framebuffer ("shot fb") as the keyboard repeated every 64 px.
     if (p != P_HOME) lv_obj_add_flag(ui.header, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_remove_flag(ui.header, LV_OBJ_FLAG_HIDDEN);
-    if (p >= P_WIFI) lv_obj_add_flag(ui.nav, LV_OBJ_FLAG_HIDDEN);
+    if (p > P_SETTINGS) lv_obj_add_flag(ui.nav, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_remove_flag(ui.nav, LV_OBJ_FLAG_HIDDEN);
-    const uint8_t navIndex = p >= P_WIFI ? P_SETTINGS : p;  // sub-pages of Settings
+    const uint8_t navIndex = p > P_SETTINGS ? P_SETTINGS : p;
     for (uint8_t i = 0; i < kNavCount; i++) {
         const bool on = i == navIndex;
         setChecked(ui.navBtn[i], on);
@@ -301,6 +325,7 @@ void selectPage(uint8_t p) {
     // they become visible so scrolling does not compete with off-screen work.
     if (p == P_SETTINGS) applySystem(s_snap);
     if (p == P_WIFI) applyWifiList(s_snap);
+    
 }
 
 void buildNav(lv_obj_t* scr) {
@@ -341,8 +366,8 @@ void buildNav(lv_obj_t* scr) {
 
 lv_obj_t* makePage(lv_obj_t* scr, uint8_t page) {
     lv_obj_t* p = box(scr);
-    lv_obj_set_pos(p, 0, page == P_HOME ? kContentY : page >= P_WIFI ? kSubY : kTabY);
-    lv_obj_set_size(p, 480, page == P_HOME ? kContentH : page >= P_WIFI ? kSubH : kTabH);
+    lv_obj_set_pos(p, 0, page == P_HOME ? kContentY : page > P_SETTINGS ? kSubY : kTabY);
+    lv_obj_set_size(p, 480, page == P_HOME ? kContentH : page > P_SETTINGS ? kSubH : kTabH);
     return p;
 }
 
@@ -357,26 +382,26 @@ void gaugeAnimCb(void*, int32_t v) {
 }
 
 void buildHome(lv_obj_t* page) {
-    // Gauge box 232x232 at (124, 0) page coords = (124, 64) on screen.
+    // Gauge box 232x232 centred horizontally (page y 0 = below 64 px header).
     lv_obj_t* g = box(page);
     lv_obj_set_pos(g, 124, 0);
     lv_obj_set_size(g, 232, 232);
-    lv_obj_add_flag(g, LV_OBJ_FLAG_CLICKABLE);  // tap: sensor history (no press tint on the gauge)
+    lv_obj_add_flag(g, LV_OBJ_FLAG_CLICKABLE);  // tap: sensor history
     lv_obj_add_event_cb(g, [](lv_event_t*) { openDetail(T_HISTORY, P_HOME); }, LV_EVENT_CLICKED, nullptr);
 
     ui.arc = lv_arc_create(g);
     lv_obj_remove_style_all(ui.arc);
-    lv_obj_set_size(ui.arc, 220, 220);  // stroke centre on r104 like the design
+    lv_obj_set_size(ui.arc, 220, 220);  // stroke centre on r104
     lv_obj_center(ui.arc);
     lv_arc_set_rotation(ui.arc, 135);
     lv_arc_set_bg_angles(ui.arc, 0, 270);
     lv_arc_set_range(ui.arc, lroundf(HMI_PRIMARY_MIN * 10), lroundf(HMI_PRIMARY_MAX * 10));
     lv_arc_set_value(ui.arc, lroundf(HMI_PRIMARY_MIN * 10));
-    lv_obj_set_style_arc_width(ui.arc, 12, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(ui.arc, 14, LV_PART_MAIN);
     lv_obj_set_style_arc_color(ui.arc, elevated(), LV_PART_MAIN);
     lv_obj_set_style_arc_rounded(ui.arc, true, LV_PART_MAIN);
-    lv_obj_set_style_arc_width(ui.arc, 12, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_color(ui.arc, accent(), LV_PART_INDICATOR);
+    lv_obj_set_style_arc_width(ui.arc, 14, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(ui.arc, lamp(), LV_PART_INDICATOR);
     lv_obj_set_style_arc_rounded(ui.arc, true, LV_PART_INDICATOR);
     lv_obj_remove_flag(ui.arc, LV_OBJ_FLAG_CLICKABLE);
     lv_group_remove_obj(ui.arc);
@@ -388,7 +413,7 @@ void buildHome(lv_obj_t* page) {
     lv_obj_center(ui.spinner);
     lv_spinner_set_anim_params(ui.spinner, 1000, 60);
     lv_obj_set_style_arc_opa(ui.spinner, LV_OPA_TRANSP, LV_PART_MAIN);
-    lv_obj_set_style_arc_width(ui.spinner, 12, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_width(ui.spinner, 14, LV_PART_INDICATOR);
     lv_obj_set_style_arc_color(ui.spinner, accent(), LV_PART_INDICATOR);
     lv_obj_set_style_arc_rounded(ui.spinner, true, LV_PART_INDICATOR);
     lv_obj_add_flag(ui.spinner, LV_OBJ_FLAG_HIDDEN);
@@ -397,8 +422,10 @@ void buildHome(lv_obj_t* page) {
     static lv_point_precise_t notch[2];
     const float frac = (HMI_PRIMARY_WARN - HMI_PRIMARY_MIN) / (HMI_PRIMARY_MAX - HMI_PRIMARY_MIN);
     const float a = (135.0f + 270.0f * frac) * (float)M_PI / 180.0f;
-    notch[0] = {116 + 96 * cosf(a), 116 + 96 * sinf(a)};
-    notch[1] = {116 + 112 * cosf(a), 116 + 112 * sinf(a)};
+    notch[0] = {static_cast<lv_value_precise_t>(lroundf(116 + 95 * cosf(a))),
+                static_cast<lv_value_precise_t>(lroundf(116 + 95 * sinf(a)))};
+    notch[1] = {static_cast<lv_value_precise_t>(lroundf(116 + 113 * cosf(a))),
+                static_cast<lv_value_precise_t>(lroundf(116 + 113 * sinf(a)))};
     lv_obj_t* line = lv_line_create(g);
     lv_obj_remove_style_all(line);
     lv_line_set_points(line, notch, 2);
@@ -407,29 +434,33 @@ void buildHome(lv_obj_t* page) {
 
     lv_obj_t* cap = label(g, &hmi_font_12_sb, muted(), HMI_PRIMARY_LABEL);
     lv_obj_set_style_text_letter_space(cap, 1, 0);
-    lv_obj_align(cap, LV_ALIGN_TOP_MID, 0, 54);
+    lv_obj_align(cap, LV_ALIGN_TOP_MID, 0, 58);
 
-    lv_obj_t* row = flexRow(g, 2, LV_FLEX_ALIGN_START);
-    lv_obj_align(row, LV_ALIGN_TOP_MID, 0, 80);
+    lv_obj_t* row = flexRow(g, 2, LV_FLEX_ALIGN_END);
+    lv_obj_align(row, LV_ALIGN_CENTER, 0, -8);
     ui.value = label(row, &hmi_font_64_sb, text(), "--.-");
     lv_obj_t* unit = label(row, &hmi_font_20_m, muted(), HMI_PRIMARY_UNIT);
-    lv_obj_set_style_pad_top(unit, 14, 0);
+    lv_obj_set_style_pad_bottom(unit, 14, 0);
 
     ui.sub = label(g, &hmi_font_13_r, muted(), "");
+    lv_obj_set_width(ui.sub, 180);
+    lv_obj_set_style_text_align(ui.sub, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(ui.sub, LV_LABEL_LONG_DOT);
     lv_obj_align(ui.sub, LV_ALIGN_TOP_MID, 0, 154);
+    lv_obj_add_flag(ui.sub, LV_OBJ_FLAG_HIDDEN);
 
     ui.pill = flexRow(g, 6);
     lv_obj_set_height(ui.pill, 28);
     lv_obj_set_style_pad_hor(ui.pill, 12, 0);
     lv_obj_set_style_radius(ui.pill, 14, 0);
     lv_obj_set_style_bg_opa(ui.pill, LV_OPA_COVER, 0);
-    lv_obj_align(ui.pill, LV_ALIGN_TOP_MID, 0, 196);
+    lv_obj_align(ui.pill, LV_ALIGN_TOP_MID, 0, 162);
     ui.pillDot = box(ui.pill);
     lv_obj_set_size(ui.pillDot, 8, 8);
     lv_obj_set_style_radius(ui.pillDot, 4, 0);
     lv_obj_set_style_bg_opa(ui.pillDot, LV_OPA_COVER, 0);
     ui.pillIcon = label(ui.pill, &hmi_icons_14, muted(), ICON_ALERT);
-    ui.pillText = label(ui.pill, &hmi_font_12_sb, muted(), "LOADING");
+    ui.pillText = label(ui.pill, &hmi_font_12_sb, muted(), "ĐANG TẢI");
     lv_obj_set_style_text_letter_space(ui.pillText, 1, 0);
 
     char buf[8];
@@ -441,29 +472,32 @@ void buildHome(lv_obj_t* page) {
         lv_obj_set_width(l, 32);
         lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
     }
-    // Below the arc's rounded end caps (arc ends at x 166 / 314, y 254 on screen).
-    lv_obj_set_pos(lo, 150, 202);
-    lv_obj_set_pos(hi, 298, 202);
+    // Below the arc's rounded end caps.
+    lv_obj_set_pos(lo, 150, 200);
+    lv_obj_set_pos(hi, 298, 200);
 
     static const char* const mLabel[2] = {HMI_METRIC1_LABEL, HMI_METRIC2_LABEL};
     static const char* const mUnit[2] = {HMI_METRIC1_UNIT, HMI_METRIC2_UNIT};
     for (int i = 0; i < 2; i++) {
         lv_obj_t* c = cardObj(page);
-        lv_obj_set_pos(c, i == 0 ? 16 : 244, 240);
+        lv_obj_set_pos(c, i == 0 ? 16 : 244, 232);
         lv_obj_set_size(c, 220, 88);
         makeClickable(c);
+        lv_obj_add_style(c, &pressedBg, LV_STATE_PRESSED);
         lv_obj_add_event_cb(c, [](lv_event_t*) { openDetail(T_HISTORY, P_HOME); }, LV_EVENT_CLICKED, nullptr);
         lv_obj_set_flex_flow(c, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(c, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_column(c, 12, 0);
-        iconChip(c, i == 0 ? ICON_DROPLET : ICON_ZAP, i == 0 ? info() : accent2());
+        lv_obj_set_style_pad_column(c, 10, 0);
+        iconChip(c, i == 0 ? ICON_DROPLET : ICON_PLUG, i == 0 ? info() : accent2());
         lv_obj_t* col = flexCol(c, 0);
+        lv_obj_set_flex_grow(col, 1);
         label(col, &hmi_font_13_r, muted(), mLabel[i]);
         lv_obj_t* vr = flexRow(col, 4, LV_FLEX_ALIGN_END);
         ui.metric[i] = label(vr, &hmi_font_28_sb, text(), "--");
         lv_obj_t* u = label(vr, &hmi_font_14_m, muted(), mUnit[i]);
-        // Bottom-aligned in the row: lift the unit so both baselines match.
         lv_obj_set_style_pad_bottom(u, hmi_font_28_sb.base_line - hmi_font_14_m.base_line, 0);
+        lv_obj_t* chev = label(c, &hmi_icons_20, muted(), ICON_CHEVRON);
+        lv_obj_set_style_text_opa(chev, LV_OPA_50, 0);
     }
 }
 
@@ -471,7 +505,10 @@ void setPill(const char* txt, lv_color_t color, const char* icon, bool tinted) {
     lv_obj_set_style_bg_color(ui.pill, tinted ? tint(color) : elevated(), 0);
     lv_obj_set_style_text_color(ui.pillText, color, 0);
     lv_label_set_text(ui.pillText, txt);
-    if (icon) {
+    if (icon && strcmp(icon, "none") == 0) {
+        lv_obj_add_flag(ui.pillDot, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(ui.pillIcon, LV_OBJ_FLAG_HIDDEN);
+    } else if (icon) {
         lv_obj_add_flag(ui.pillDot, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(ui.pillIcon, LV_OBJ_FLAG_HIDDEN);
         lv_label_set_text(ui.pillIcon, icon);
@@ -510,29 +547,35 @@ void applyPrimary(const Model& m) {
         case SensorState::Loading:
             lv_anim_delete(&ui, gaugeAnimCb);
             lv_label_set_text(ui.value, "--.-");
+            lv_obj_remove_flag(ui.sub, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_align(ui.pill, LV_ALIGN_TOP_MID, 0, 174);
             lv_label_set_text(ui.sub, "Đang đọc cảm biến…");
-            setPill("LOADING", muted(), nullptr, false);
+            setPill("ĐANG TẢI", muted(), nullptr, false);
             return;
         case SensorState::Error:
             lv_anim_delete(&ui, gaugeAnimCb);
             lv_label_set_text(ui.value, "--.-");
+            lv_obj_remove_flag(ui.sub, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_align(ui.pill, LV_ALIGN_TOP_MID, 0, 174);
             lv_label_set_text(ui.sub, "Lỗi đọc cảm biến");
-            setPill("ERROR", error(), ICON_ERROR, true);
+            setPill("LỖI", error(), ICON_ERROR, true);
             return;
         case SensorState::Stale:
             lv_obj_set_style_arc_color(ui.arc, track(), LV_PART_INDICATOR);
+            lv_obj_remove_flag(ui.sub, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_align(ui.pill, LV_ALIGN_TOP_MID, 0, 174);
             snprintf(buf, sizeof(buf), "Dữ liệu lúc %s", m.lastOkClock);
             lv_label_set_text(ui.sub, buf);
-            setPill("OFFLINE", muted(), ICON_WIFI_OFF, false);
+            setPill("MẤT KẾT NỐI", muted(), ICON_WIFI_OFF, false);
             break;
         case SensorState::Ok: {
             const bool warn = p.value >= HMI_PRIMARY_WARN;
             lv_obj_set_style_arc_color(ui.arc, warn ? warning() : accent(), LV_PART_INDICATOR);
-            snprintf(buf, sizeof(buf), warn ? "Cao hơn ngưỡng %.0f %s" : "Ngưỡng cảnh báo %.0f %s",
-                     HMI_PRIMARY_WARN, HMI_PRIMARY_UNIT);
-            lv_label_set_text(ui.sub, buf);
-            if (warn) setPill("WARNING", warning(), ICON_ALERT, true);
-            else setPill("ACTIVE", success(), nullptr, true);
+            lv_label_set_text(ui.sub, "");
+            lv_obj_add_flag(ui.sub, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_align(ui.pill, LV_ALIGN_TOP_MID, 0, 162);
+            if (warn) setPill("CẢNH BÁO", warning(), ICON_ALERT, true);
+            else setPill("BÌNH THƯỜNG", success(), "none", true);
             break;
         }
     }
@@ -602,62 +645,247 @@ lv_obj_t* switchRow(lv_obj_t* card, const char* icon, const char* name, bool las
 
 void buildControl(lv_obj_t* page) {
     makeScrollPage(page);
+    lv_obj_set_style_pad_all(page, 8, 0);
+    lv_obj_set_style_pad_row(page, 0, 0);
+    lv_obj_set_flex_flow(page, LV_FLEX_FLOW_COLUMN);
+    lv_obj_remove_flag(page, LV_OBJ_FLAG_SCROLLABLE);
 
-    sectionTitle(page, "RELAY TRÊN PANEL");
-    lv_obj_t* local = settingsCard(page);
+    ui.ctrlClock = ui.ctrlHum = ui.ctrlHumState = ui.ctrlPower = nullptr;
     for (int i = 0; i < RELAY_COUNT; i++) {
-        lv_obj_t* r = switchRow(local, kRelayIcons[i], kRelayNames[i], i == RELAY_COUNT - 1,
-                                &ui.relayIcon[i], &ui.relayStatus[i], &ui.relaySwitch[i]);
-        lv_obj_add_event_cb(r, [](lv_event_t* e) {
-            const auto idx = static_cast<uint8_t>(reinterpret_cast<uintptr_t>(lv_event_get_user_data(e)));
-            if (ui.cb.relayToggle) ui.cb.relayToggle(idx);
-        }, LV_EVENT_CLICKED, reinterpret_cast<void*>(static_cast<uintptr_t>(i)));
+        ui.relayIcon[i] = ui.relayDot[i] = ui.relayStatus[i] = ui.relaySwitch[i] = ui.relayCard[i] = nullptr;
+    }
+    for (uint8_t d = 0; d < kMaxDevices; d++) {
+        ui.devStatus[d] = nullptr;
+        for (uint8_t c = 0; c < kMaxChannels; c++) {
+            ui.devRow[d][c] = ui.devIcon[d][c] = ui.devSub[d][c] = ui.devSwitch[d][c] = nullptr;
+        }
     }
 
-    // One group per Tasmota device: title + online state, then its channels.
-    for (uint8_t d = 0; d < s_snap.deviceCount; d++) {
-        const DeviceInfo& dev = s_snap.devices[d];
-        lv_obj_t* head = box(page);
+    lv_obj_t* grid = box(page);
+    lv_obj_set_size(grid, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_layout(grid, LV_LAYOUT_GRID);
+    static int32_t col_dsc[] = {LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST};
+    static int32_t row_dsc[] = {LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST};
+    lv_obj_set_grid_dsc_array(grid, col_dsc, row_dsc);
+    lv_obj_set_style_pad_column(grid, 8, 0);
+    lv_obj_set_style_pad_row(grid, 8, 0);
+
+    if (ui.acAnim) { lv_timer_delete(ui.acAnim); ui.acAnim = nullptr; }
+    if (ui.fanAnim) { lv_timer_delete(ui.fanAnim); ui.fanAnim = nullptr; }
+    if (ui.lightAnim) { lv_timer_delete(ui.lightAnim); ui.lightAnim = nullptr; }
+    static const lv_image_dsc_t* lightFrames[] = {&img_control_light_0, &img_control_light_1, &img_control_light_2, &img_control_light_3, &img_control_light_4, &img_control_light_5};
+    static const lv_image_dsc_t* fanFrames[] = {&img_control_fan_0, &img_control_fan_1, &img_control_fan_2, &img_control_fan_3, &img_control_fan_4, &img_control_fan_5};
+    static uint8_t fanFrame = 0, lightFrame1 = 0, lightFrame2 = 0;
+    auto makeFanAnim = [](lv_timer_t*& timer) {
+        timer = lv_timer_create([](lv_timer_t* t) {
+            fanFrame = (fanFrame + 1) % 6;
+            if (!ui.relayIcon[0] || !lv_obj_has_class(ui.relayIcon[0], &lv_image_class)) return;
+            lv_image_set_src(ui.relayIcon[0], fanFrames[fanFrame]);
+        }, 140, nullptr);
+        lv_timer_pause(timer);
+    };
+    auto makeLightAnim1 = [](lv_timer_t*& timer) {
+        timer = lv_timer_create([](lv_timer_t* t) {
+            lightFrame1 = (lightFrame1 + 1) % 6;
+            if (!ui.relayIcon[1] || !lv_obj_has_class(ui.relayIcon[1], &lv_image_class)) return;
+            lv_image_set_src(ui.relayIcon[1], lightFrames[lightFrame1]);
+        }, 140, nullptr);
+        lv_timer_pause(timer);
+    };
+    auto makeLightAnim2 = [](lv_timer_t*& timer) {
+        timer = lv_timer_create([](lv_timer_t* t) {
+            lightFrame2 = (lightFrame2 + 1) % 6;
+            if (!ui.relayIcon[2] || !lv_obj_has_class(ui.relayIcon[2], &lv_image_class)) return;
+            lv_image_set_src(ui.relayIcon[2], lightFrames[lightFrame2]);
+        }, 140, nullptr);
+        lv_timer_pause(timer);
+    };
+    makeFanAnim(ui.acAnim);
+    makeLightAnim1(ui.fanAnim);
+    makeLightAnim2(ui.lightAnim);
+
+    // Info card (div2): logo left, info stacked right
+    lv_obj_t* infoCard = cardObj(grid);
+    lv_obj_set_grid_cell(infoCard, LV_GRID_ALIGN_STRETCH, 3, 2, LV_GRID_ALIGN_STRETCH, 0, 2);
+    lv_obj_set_flex_flow(infoCard, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(infoCard, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(infoCard, 10, 0);
+    lv_obj_set_style_pad_column(infoCard, 10, 0);
+
+    lv_obj_t* logo = lv_image_create(infoCard);
+    lv_image_set_src(logo, &nova_logo_48);
+    lv_image_set_scale(logo, 200);  // 48px source * 200/256 ≈ 38px
+    lv_obj_set_style_margin_left(logo, kMargin, 0);
+
+    lv_obj_t* infoCol = flexCol(infoCard, 2);
+    lv_obj_set_flex_grow(infoCol, 1);
+    lv_obj_set_flex_align(infoCol, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    ui.ctrlClock = label(infoCol, &hmi_font_20_m, text(), "--:--");
+    lv_obj_set_style_text_align(ui.ctrlClock, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_t* metricsCol = flexCol(infoCol, 6);
+    lv_obj_set_flex_align(metricsCol, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(metricsCol, 6, 0);
+
+    lv_obj_t* humRow = flexRow(metricsCol, 6);
+    lv_obj_set_flex_align(humRow, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    label(humRow, &hmi_icons_20, info(), ICON_DROPLET);
+    ui.ctrlHum = label(humRow, &hmi_font_12_sb, text(), "--%");
+
+    lv_obj_t* powerRow = flexRow(metricsCol, 6);
+    lv_obj_set_flex_align(powerRow, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    label(powerRow, &hmi_icons_20, lamp(), ICON_ZAP);
+    ui.ctrlPower = label(powerRow, &hmi_font_12_sb, text(), "-- W");
+
+
+    struct Btn { const char* name; uint8_t relay; uint8_t col; uint8_t row; uint8_t cspan; uint8_t rspan; const lv_font_t* font; uint8_t imgPct; };
+    Btn btns[3] = {
+        {"Quạt", 0, 0, 0, 3, 6, &hmi_font_20_m, 72},  // div1 (large card)
+        {"Đèn 1", 1, 3, 2, 2, 2, &hmi_font_16_sb, 62},  // div3
+        {"Đèn 2", 2, 3, 4, 2, 2, &hmi_font_16_sb, 62},  // div4
+    };
+    // 5x6 grid in 464x464 content, 8px gaps: col=86.4 row=70.67
+    auto cellW = [](uint8_t span) { return (int32_t)(span * 86.4f + (span - 1) * 8); };
+    auto cellH = [](uint8_t span) { return (int32_t)(span * 70.6667f + (span - 1) * 8); };
+    for (int i = 0; i < 3; i++) {
+        lv_obj_t* b = cardObj(grid);
+        ui.relayCard[i] = b;
+        lv_obj_remove_style(b, &focusRing, LV_STATE_FOCUS_KEY);
+        lv_obj_set_style_outline_width(b, 0, LV_STATE_ANY);
+        lv_obj_set_grid_cell(b, LV_GRID_ALIGN_STRETCH, btns[i].col, btns[i].cspan,
+                             LV_GRID_ALIGN_STRETCH, btns[i].row, btns[i].rspan);
+        makeClickable(b);
+        lv_obj_add_style(b, &pressedBg, LV_STATE_PRESSED);
+        lv_obj_set_flex_flow(b, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(b, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+        lv_obj_set_style_pad_all(b, 12, 0);
+        lv_obj_set_style_pad_row(b, 0, 0);
+        lv_obj_set_style_border_width(b, 2, 0);
+        lv_obj_set_style_border_opa(b, LV_OPA_TRANSP, 0);
+
+        lv_obj_t* head = box(b);
         lv_obj_set_size(head, LV_PCT(100), LV_SIZE_CONTENT);
         lv_obj_set_flex_flow(head, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
-        char title[32];
-        snprintf(title, sizeof(title), "%s", dev.name);
-        for (char* c = title; *c; c++) *c = toupper(static_cast<unsigned char>(*c));  // ASCII names
-        lv_obj_t* t = sectionTitle(head, title);
-        lv_obj_set_flex_grow(t, 1);
-        ui.devStatus[d] = label(head, &hmi_font_12_sb, muted(), "Đang kết nối…");
-        lv_obj_set_style_pad_right(ui.devStatus[d], 4, 0);
+        lv_obj_set_flex_align(head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(head, 8, 0);
+        lv_obj_t* dot = box(head);
+        lv_obj_set_size(dot, 12, 12);
+        lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(dot, muted(), 0);
+        lv_obj_remove_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
+        ui.relayDot[i] = dot;
+        label(head, btns[i].font, text(), btns[i].name);
 
-        lv_obj_t* card = settingsCard(page);
-        for (uint8_t c = 0; c < dev.channels && c < kMaxChannels; c++) {
-            char name[24];
-            if (dev.labels[c][0]) strlcpy(name, dev.labels[c], sizeof(name));
-            else snprintf(name, sizeof(name), "Kênh %u", c + 1);
-            lv_obj_t* r = switchRow(card, ICON_PLUG_ZAP, name, c + 1 == dev.channels,
-                                    &ui.devIcon[d][c], &ui.devSub[d][c], &ui.devSwitch[d][c]);
-            ui.devRow[d][c] = r;
-            lv_obj_add_event_cb(r, [](lv_event_t* e) {
-                const auto v = static_cast<uint8_t>(reinterpret_cast<uintptr_t>(lv_event_get_user_data(e)));
-                if (ui.cb.deviceToggle) ui.cb.deviceToggle(v >> 4, v & 0x0F);
-            }, LV_EVENT_CLICKED, reinterpret_cast<void*>(static_cast<uintptr_t>((d << 4) | c)));
-        }
+        lv_obj_t* area = box(b);
+        lv_obj_set_width(area, LV_PCT(100));
+        lv_obj_set_flex_grow(area, 1);
+        lv_obj_set_flex_flow(area, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(area, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_clear_flag(area, LV_OBJ_FLAG_SCROLLABLE);
+
+        const int32_t innerW = cellW(btns[i].cspan) - 28;  // padding + border reserve
+        const int32_t innerH = cellH(btns[i].rspan) - 28 - 28; // rough header reserve
+        const int32_t boxMin = LV_MIN(innerW, innerH > 40 ? innerH : innerW);
+        const int32_t target = boxMin * btns[i].imgPct / 100;
+        const uint16_t scale = (uint16_t)LV_CLAMP(128, target * 256 / 96, 768); // 96px source
+
+        lv_obj_t* im = lv_image_create(area);
+        lv_image_set_src(im, btns[i].relay == 0 ? &img_control_fan : &img_control_light);
+        lv_image_set_scale(im, scale);
+        lv_image_set_antialias(im, true);
+        lv_obj_set_style_border_width(im, 0, 0);
+        lv_obj_set_style_outline_width(im, 0, 0);
+        lv_obj_remove_style(im, &focusRing, LV_STATE_ANY);
+        ui.relayIcon[i] = im;
+        ui.relayStatus[i] = nullptr;
+        ui.relaySwitch[i] = nullptr;
+
+        lv_obj_add_event_cb(b, [](lv_event_t* e) {
+            const auto idx = static_cast<uint8_t>(reinterpret_cast<uintptr_t>(lv_event_get_user_data(e)));
+            if (ui.cb.relayToggle) ui.cb.relayToggle(idx);
+        }, LV_EVENT_CLICKED, reinterpret_cast<void*>(static_cast<uintptr_t>(btns[i].relay)));
     }
 }
 
 void applyRelays(const Model& m) {
+    static const lv_color_t border[RELAY_COUNT] = {lamp(), lamp(), lamp()};
+    static const lv_image_dsc_t* offImg[RELAY_COUNT] = {&img_control_fan, &img_control_light, &img_control_light};
+    static lv_timer_t* const timers[RELAY_COUNT] = {ui.acAnim, ui.fanAnim, ui.lightAnim};
     for (int i = 0; i < RELAY_COUNT; i++) {
+        if (!ui.relayIcon[i] && !ui.relayDot[i]) continue;
         const bool on = m.relay[i];
-        setChecked(ui.relaySwitch[i], on);
-        // Each device lights up in its own colour when on, grey when off.
-        const lv_color_t onColor[RELAY_COUNT] = {lamp(), info(), success()};  // per palette
-        lv_obj_set_style_text_color(ui.relayIcon[i], on ? onColor[i] : muted(), 0);
-        lv_label_set_text_fmt(ui.relayStatus[i], "%s · Kênh %d", on ? "Đang bật" : "Đã tắt", i + 1);
+        if (ui.relaySwitch[i]) setChecked(ui.relaySwitch[i], on);
+        if (ui.relayDot[i]) lv_obj_set_style_bg_color(ui.relayDot[i], on ? success() : muted(), 0);
+        if (ui.relayIcon[i]) {
+            lv_obj_t* card = ui.relayCard[i];
+            if (card) {
+                lv_obj_remove_style(card, &focusRing, LV_STATE_ANY);
+                lv_obj_set_style_outline_width(card, 0, LV_STATE_ANY);
+                lv_obj_set_style_border_width(card, 2, 0);
+                lv_obj_set_style_border_side(card, LV_BORDER_SIDE_FULL, 0);
+                lv_obj_set_style_border_color(card, border[i], 0);
+                lv_obj_set_style_border_opa(card, on ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+                lv_obj_set_style_radius(card, 16, 0);
+            }
+            if (lv_obj_has_class(ui.relayIcon[i], &lv_image_class)) {
+                lv_obj_set_style_opa(ui.relayIcon[i], on ? LV_OPA_COVER : LV_OPA_60, 0);
+                // Timers are assigned after build; read current ui timer pointers.
+                lv_timer_t* tm = i == 0 ? ui.acAnim : i == 1 ? ui.fanAnim : ui.lightAnim;
+                if (tm) {
+                    if (on) lv_timer_resume(tm);
+                    else { lv_timer_pause(tm); lv_image_set_src(ui.relayIcon[i], offImg[i]); }
+                } else if (!on) {
+                    lv_image_set_src(ui.relayIcon[i], offImg[i]);
+                }
+            } else {
+                lv_obj_set_style_text_color(ui.relayIcon[i], on ? border[i] : muted(), 0);
+            }
+        }
+        if (ui.relayStatus[i]) {
+            lv_label_set_text(ui.relayStatus[i], on ? "Đang bật" : "Đã tắt");
+            lv_obj_set_style_text_color(ui.relayStatus[i], on ? success() : muted(), 0);
+        }
+    }
+}
+
+void applyControlInfo(const Model& m) {
+    if (ui.ctrlClock) lv_label_set_text(ui.ctrlClock, m.clock);
+    if (ui.ctrlHum) {
+        const Metric& hum = m.metric[0];
+        const bool has = hum.state == SensorState::Ok || hum.state == SensorState::Stale;
+        char buf[20];
+        if (has) snprintf(buf, sizeof(buf), "%.0f%%", hum.value);
+        else strlcpy(buf, "--%", sizeof(buf));
+        lv_label_set_text(ui.ctrlHum, buf);
+        lv_obj_set_style_text_color(ui.ctrlHum, hum.state == SensorState::Stale ? muted() : text(), 0);
+    }
+    if (ui.ctrlPower) {
+        const Metric& pw = m.metric[1];
+        const bool has = pw.state == SensorState::Ok || pw.state == SensorState::Stale;
+        char buf[20];
+        if (has) snprintf(buf, sizeof(buf), "%.0f W", pw.value);
+        else strlcpy(buf, "-- W", sizeof(buf));
+        lv_label_set_text(ui.ctrlPower, buf);
+        lv_obj_set_style_text_color(ui.ctrlPower, has ? text() : muted(), 0);
+    }
+    if (ui.ctrlHumState) {
+        const Metric& hum = m.metric[0];
+        if (hum.state == SensorState::Stale) {
+            lv_label_set_text(ui.ctrlHumState, "Mất kết nối");
+            lv_obj_set_style_text_color(ui.ctrlHumState, warning(), 0);
+        } else if (hum.state == SensorState::Error) {
+            lv_label_set_text(ui.ctrlHumState, "Lỗi cảm biến");
+            lv_obj_set_style_text_color(ui.ctrlHumState, error(), 0);
+        } else {
+            lv_label_set_text(ui.ctrlHumState, "Nova Smart Home");
+            lv_obj_set_style_text_color(ui.ctrlHumState, muted(), 0);
+        }
     }
 }
 
 void applyDevices(const Model& m) {
     for (uint8_t d = 0; d < m.deviceCount; d++) {
+        if (!ui.devStatus[d]) continue;
         const bool online = m.deviceOnline[d];
         if (!m.deviceKnown[d]) {
             lv_label_set_text(ui.devStatus[d], "Đang kết nối…");
@@ -670,6 +898,7 @@ void applyDevices(const Model& m) {
             lv_obj_set_style_text_color(ui.devStatus[d], warning(), 0);
         }
         for (uint8_t c = 0; c < m.devices[d].channels && c < kMaxChannels; c++) {
+            if (!ui.devRow[d][c]) continue;
             const bool on = online && (m.deviceMask[d] >> c) & 1;
             setChecked(ui.devSwitch[d][c], on);
             lv_obj_set_style_text_color(ui.devIcon[d][c], on ? lamp() : muted(), 0);
@@ -813,18 +1042,18 @@ void buildSettings(lv_obj_t* page) {
 
     // Only what is used often is out here; the details sit in the sub-pages
     // (Mạng & MQTT, Thẻ nhớ, Hệ thống).
-    // --- about: HCMUT identity + firmware ---
+    // --- about: Nova identity + firmware ---
     lv_obj_t* about = settingsCard(page);
     lv_obj_set_style_pad_all(about, 16, 0);
     lv_obj_set_flex_flow(about, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(about, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(about, 14, 0);
     lv_obj_t* mark = lv_image_create(about);
-    lv_image_set_src(mark, &bk_logo_48);
+    lv_image_set_src(mark, &nova_logo_48);
     lv_obj_t* col = flexCol(about, 2);
-    label(col, &hmi_font_12_sb, muted(), "ĐẠI HỌC QUỐC GIA TP.HCM");
-    label(col, &hmi_font_14_m, text(), "TRƯỜNG ĐẠI HỌC BÁCH KHOA");
-    label(col, &hmi_font_13_r, muted(), "Smart Home Panel · v" FIRMWARE_VERSION);
+    label(col, &hmi_font_12_sb, muted(), "NOVA SMART HOME");
+    label(col, &hmi_font_14_m, text(), "Smart Home Panel");
+    label(col, &hmi_font_13_r, muted(), "Nova firmware · v" FIRMWARE_VERSION);
     lv_obj_set_flex_grow(col, 1);
     addChevron(about);
     lv_obj_set_style_bg_color(about, pressed(), LV_STATE_PRESSED);
@@ -841,7 +1070,7 @@ void buildSettings(lv_obj_t* page) {
     addChevron(wifiRow);
     rowPressable(wifiRow);
     lv_obj_add_event_cb(wifiRow, [](lv_event_t*) { openWifiPage(); }, LV_EVENT_CLICKED, nullptr);
-    ui.sysIp = detailRow(net, ICON_GLOBE, "Mạng & MQTT", true, T_NET);
+    ui.sysEspnow = detailRow(net, ICON_ZAP, "ESP-NOW", true, T_ESPNOW);
 
     // --- display ---
     sectionTitle(page, "MÀN HÌNH");
@@ -861,7 +1090,21 @@ void buildSettings(lv_obj_t* page) {
         if (ui.cb.autoDimChanged) ui.cb.autoDimChanged(on);
     }, LV_EVENT_CLICKED, nullptr);
 
-    // Colour palette: tap cycles Lime -> Ember -> Cobalt; the name and a dot
+    // Light / dark mode switch (rebuilds UI with current palette).
+    lv_obj_t* modeRow = nullptr;
+    lv_obj_t* modeValue = settingsRow(display, dark() ? ICON_SUN : ICON_MOON, "Giao diện", false, &modeRow);
+    ui.modeLabel = modeValue;
+    lv_label_set_text(modeValue, dark() ? "Tối" : "Sáng");
+    ui.modeSwitch = makeSwitch(modeRow);
+    setChecked(ui.modeSwitch, !s_snap.darkMode);  // checked = light
+    rowPressable(modeRow);
+    lv_obj_add_event_cb(modeRow, [](lv_event_t*) {
+        const bool darkOn = !s_snap.darkMode;
+        setDarkMode(darkOn);
+        if (ui.cb.darkModeChanged) ui.cb.darkModeChanged(darkOn);
+    }, LV_EVENT_CLICKED, nullptr);
+
+    // Colour palette: tap cycles Nova -> Ocean -> Ember -> Lime; the name and a dot
     // are drawn in the palette's own accent so the choice previews itself.
     lv_obj_t* themeRow = nullptr;
     lv_obj_t* themeValue = settingsRow(display, ICON_PALETTE, "Màu chủ đạo", true, &themeRow);
@@ -1388,6 +1631,8 @@ void applyFileView(const Model& m) {
         if (ui.cb.fileDelete) ui.cb.fileDelete(ui.viewPath);
     }, LV_EVENT_CLICKED, dl);
 }
+
+void openEspNowEditor();
 
 // ---------- detail pages ----------
 
@@ -1917,51 +2162,29 @@ void applyDetail(const Model& m) {
     lv_obj_t* c;
 
     switch (ui.detailTopic) {
-        case T_NET:
-            c = detailCard("WI-FI");
-            kv(c, "Trạng thái", linked ? "Đã kết nối" : (m.link == Link::Connecting ? "Đang kết nối…" : "Mất kết nối"),
-               linked ? success() : warning());
-            if (linked) {
-                kv(c, "Tên mạng (SSID)", s.ssid);
-                snprintf(a, sizeof(a), "%d dBm · %s", s.rssi, s.rssi >= -60 ? "Tốt" : s.rssi >= -72 ? "Trung bình" : "Yếu");
-                kv(c, "Cường độ sóng", a, s.rssi >= -72 ? muted() : warning());
-                kv(c, "Điểm truy cập (BSSID)", s.bssid);
-                snprintf(a, sizeof(a), "%u · 2.4 GHz", s.channel);
-                kv(c, "Kênh", a);
-            }
-            closeCard(c);
-            c = detailCard("ĐỊA CHỈ");
-            kv(c, "Địa chỉ IP", s.ip[0] ? s.ip : "–", s.ip[0] ? text() : muted());
-            if (linked) {
-                kv(c, "Gateway", s.gateway);
-                kv(c, "Subnet mask", s.subnet);
-                kv(c, "DNS", s.dns);
-            }
-            kv(c, "MAC", s.mac);
-            kv(c, "Hostname", s.hostname);
-            closeCard(c);
-            detailNote("Đổi mạng ở mục Wi-Fi trong Cài đặt. Khi mất kết nối, board thử lại các mạng đã biết, cách nhau 5–60 giây.");
-            [[fallthrough]];  // MQTT on the same page
+        case T_ESPNOW: {
+            c = settingsCard(ui.detailList);
+            lv_obj_t* edit = nullptr;
+            settingsRow(c, ICON_ZAP, "Nhập/sửa cấu hình", true, &edit);
+            addChevron(edit);
+            rowPressable(edit);
+            lv_obj_add_event_cb(edit, [](lv_event_t*) { openEspNowEditor(); }, LV_EVENT_CLICKED, nullptr);
 
-        case T_MQTT:
-            c = detailCard("MQTT");
-            snprintf(a, sizeof(a), "%s (%d)", mqttStateText(s.mqttState), s.mqttState);
-            kv(c, "Trạng thái", a, s.mqttState == 0 ? success() : (linked ? warning() : muted()));
-            snprintf(a, sizeof(a), "%s:%u", s.mqttHost, s.mqttPort);
-            kv(c, "Broker", a);
-            kv(c, "Đăng nhập", s.mqttAuth ? "Có tài khoản" : "Ẩn danh");
-            kv(c, "Client ID", MQTT_CLIENT_ID "-xxxx");
-            kv(c, "Keep-alive", "60 giây");
-            kv(c, "Thử lại", "5–60 giây, timeout TCP 1 giây");
+            c = detailCard("ESP-NOW (SLAVE)");
+            snprintf(a, sizeof(a), "%s", s.espnowReady ? "Sẵn sàng" : "Chưa sẵn sàng");
+            kv(c, "Trạng thái", a, s.espnowReady ? success() : warning());
+            snprintf(a, sizeof(a), "%u", m.espnowCfg.channel ? m.espnowCfg.channel : ESPNOW_CHANNEL);
+            kv(c, "Kênh", a);
+            snprintf(a, sizeof(a), "%u thiết bị", (unsigned)s.espnowNodes);
+            kv(c, "Thiết bị đã thấy", a, text());
+            kv(c, "MAC panel", s.mac[0] ? s.mac : "–", muted());
+            kv(c, "Master MAC", m.espnowCfg.masterMac[0] ? m.espnowCfg.masterMac : ESPNOW_MASTER_MAC, m.espnowCfg.masterMac[0] ? text() : muted());
+            kv(c, "PMK/LMK", (m.espnowCfg.pmk[0] && m.espnowCfg.lmk[0]) ? "Đã cấu hình" : "Dùng mặc định firmware", (m.espnowCfg.pmk[0] && m.espnowCfg.lmk[0]) ? muted() : warning());
+            kv(c, "Chi tiết", s.espnowStatus[0] ? s.espnowStatus : "–", muted());
             closeCard(c);
-            c = detailCard("TOPIC");
-            kv(c, "Gốc", MQTT_TOPIC_BASE);
-            kv(c, "Trạng thái", "/state, /availability");
-            kv(c, "Lệnh", "/command");
-            kv(c, "Cảm biến", "/sensor");
-            closeCard(c);
-            detailNote("Đổi broker bằng mục \"mqtt\" trong /config.json trên thẻ nhớ, hoặc MQTT_BROKER trong config.h.");
+            detailNote("Nhập MAC master Spotpear, kênh và key ngay trên màn hình. PMK/LMK để trống khi lưu sẽ giữ key hiện tại. Lưu sẽ ghi /config.json và áp dụng ngay (không cần sửa file/nạp lại firmware).");
             break;
+        }
 
         case T_MEMORY: {
             // Data-first instrument layout: big value, then a 15 s trace with a
@@ -2105,12 +2328,12 @@ void applyDetail(const Model& m) {
             lv_obj_set_flex_align(head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
             lv_obj_set_style_pad_column(head, 14, 0);
             lv_obj_t* mark = lv_image_create(head);
-            lv_image_set_src(mark, &bk_logo_48);
+            lv_image_set_src(mark, &nova_logo_48);
             lv_obj_t* col = flexCol(head, 2);
-            label(col, &hmi_font_12_sb, muted(), "ĐẠI HỌC QUỐC GIA TP.HCM");
-            label(col, &hmi_font_14_m, text(), "TRƯỜNG ĐẠI HỌC BÁCH KHOA");
+            label(col, &hmi_font_12_sb, muted(), "NOVA SMART HOME");
+            label(col, &hmi_font_14_m, text(), "Smart Home Panel");
             c = detailCard("THIẾT BỊ");
-            kv(c, "Sản phẩm", "Smart Home Panel");
+            kv(c, "Sản phẩm", "Nova Smart Home Panel");
             kv(c, "Firmware", "v" FIRMWARE_VERSION, text());
             kv(c, "Ngày build", __DATE__ " " __TIME__);
             kv(c, "Phần cứng", "GUITION ESP32-4848S040");
@@ -2190,7 +2413,7 @@ void liveData() {
 }
 
 void showTopic(uint8_t topic) {
-    static const char* const titles[] = {"Mạng & MQTT", "Mạng & MQTT", "Hệ thống", "Thời gian chạy", "Thẻ nhớ",
+    static const char* const titles[] = {"ESP-NOW", "Hệ thống", "Thời gian chạy", "Thẻ nhớ",
                                          "config.json", "Giới thiệu", "Lịch sử cảm biến", "Nhật ký sự kiện"};
     ui.detailTopic = topic;
     lv_label_set_text(ui.detailTitle, titles[topic]);
@@ -2248,7 +2471,7 @@ void buildWifi(lv_obj_t* page) {
     lv_obj_t* scroll = box(page);
     lv_obj_set_pos(scroll, kSubPad, kBarH);
     lv_obj_set_size(scroll, kSubW, kSubH - kBarH - kSubPad);
-    lv_obj_add_flag(scroll, LV_OBJ_FLAG_CLICKABLE);  // see makeScrollPage()
+    lv_obj_add_flag(scroll, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(scroll, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(scroll, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(scroll, LV_SCROLLBAR_MODE_ACTIVE);
@@ -2266,6 +2489,7 @@ const char* signalIcon(int8_t rssi) {
 }
 
 void applyWifiList(const Model& m) {
+    if (!ui.wifiList) return;
     strlcpy(ui.wifiRenderedSsid, m.sys.ssid, sizeof(ui.wifiRenderedSsid));
     if (m.scanning) {
         lv_obj_add_flag(ui.wifiRefresh, LV_OBJ_FLAG_HIDDEN);
@@ -2276,13 +2500,9 @@ void applyWifiList(const Model& m) {
     }
     lv_obj_t* wifiScroll = lv_obj_get_parent(ui.wifiList);
     const int32_t keepY = lv_obj_get_scroll_y(wifiScroll);
-    struct Restore {  // runs on every return path below
-        lv_obj_t* o;
-        int32_t y;
-        ~Restore() {
-            lv_obj_update_layout(o);
-            lv_obj_scroll_to_y(o, y, LV_ANIM_OFF);
-        }
+    struct Restore {
+        lv_obj_t* o; int32_t y;
+        ~Restore() { lv_obj_update_layout(o); lv_obj_scroll_to_y(o, y, LV_ANIM_OFF); }
     } restore{wifiScroll, keepY};
     lv_obj_clean(ui.wifiList);
     const bool linked = m.link == Link::Online || m.link == Link::BrokerDown;
@@ -2322,49 +2542,47 @@ void applyWifiList(const Model& m) {
     }
 }
 
-// ---------- join sheet: password + keyboard ----------
-
 void closeSheet() {
-    lv_obj_add_flag(ui.sheet, LV_OBJ_FLAG_HIDDEN);
-    lv_textarea_set_text(ui.pass, "");
+    if (ui.sheet) lv_obj_add_flag(ui.sheet, LV_OBJ_FLAG_HIDDEN);
+    if (ui.pass) lv_textarea_set_text(ui.pass, "");
 }
 
 void setJoinStatus(const char* txt, lv_color_t color, bool busy) {
+    if (!ui.joinStatus) return;
     lv_label_set_text(ui.joinStatus, txt);
     lv_obj_set_style_text_color(ui.joinStatus, color, 0);
     if (busy) {
         lv_obj_remove_flag(ui.joinSpinner, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_x(ui.joinStatus, kMargin + 30);
-        lv_obj_add_state(ui.joinBtn, LV_STATE_DISABLED);
-        lv_obj_set_style_text_color(ui.joinBtnText, muted(), 0);
+        if (ui.joinBtn) lv_obj_add_state(ui.joinBtn, LV_STATE_DISABLED);
+        if (ui.joinBtnText) lv_obj_set_style_text_color(ui.joinBtnText, muted(), 0);
     } else {
         lv_obj_add_flag(ui.joinSpinner, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_x(ui.joinStatus, kMargin);
-        lv_obj_remove_state(ui.joinBtn, LV_STATE_DISABLED);
-        lv_obj_set_style_text_color(ui.joinBtnText, bg(), 0);
+        if (ui.joinBtn) lv_obj_remove_state(ui.joinBtn, LV_STATE_DISABLED);
+        if (ui.joinBtnText) lv_obj_set_style_text_color(ui.joinBtnText, bg(), 0);
     }
 }
 
 void sheetLayout(bool secure);
 
 void openSheet(const WifiNetwork& n) {
+    if (!ui.sheet) return;
     strlcpy(ui.joinSsid, n.ssid, sizeof(ui.joinSsid));
     ui.joinSecure = n.secure;
     ui.joinSaved = n.secure && n.saved;
     lv_label_set_text(ui.sheetSsid, n.ssid);
     lv_textarea_set_text(ui.pass, "");
     lv_textarea_set_password_mode(ui.pass, true);
-    lv_label_set_text(lv_obj_get_child(ui.eye, 0), ICON_EYE);
-    const lv_obj_flag_t h = LV_OBJ_FLAG_HIDDEN;
+    if (ui.eye && lv_obj_get_child_cnt(ui.eye)) lv_label_set_text(lv_obj_get_child(ui.eye, 0), ICON_EYE);
     sheetLayout(n.secure && !ui.joinSaved);
     setJoinStatus("", muted(), false);
     lv_keyboard_set_mode(ui.kb, LV_KEYBOARD_MODE_TEXT_LOWER);
-    lv_obj_remove_flag(ui.sheet, h);  // no fade: see selectPage()
+    lv_obj_remove_flag(ui.sheet, LV_OBJ_FLAG_HIDDEN);
 }
 
 void submitJoin() {
     if (lv_obj_has_state(ui.joinBtn, LV_STATE_DISABLED)) return;
-    // Saved network: "\x01" (wifimgr::kUseSaved) asks for the stored password.
     const char* pw = !ui.joinSecure ? "" : ui.joinSaved ? "\x01" : lv_textarea_get_text(ui.pass);
     if (ui.joinSecure && !ui.joinSaved && strlen(pw) < 8) {
         setJoinStatus("Mật khẩu cần ít nhất 8 ký tự", error(), false);
@@ -2373,64 +2591,47 @@ void submitJoin() {
     if (ui.cb.wifiJoin) ui.cb.wifiJoin(ui.joinSsid, pw);
 }
 
-// ---------- password keyboard ----------
-//
-// Phone-style layout: a digit row on top (Wi-Fi passwords are full of digits),
-// 5 rows x ~48 px keys.  Mode keys keep LVGL's built-in labels ("ABC", "abc",
-// "1#", LV_SYMBOL_BACKSPACE, LV_SYMBOL_OK) so lv_keyboard handles them.
-// lv_buttonmatrix_ctrl_t is an enum: C++ needs the OR-ed flags cast back.
 #define KB_CTRL(v) static_cast<lv_buttonmatrix_ctrl_t>(v)
-#define KB_W(w) KB_CTRL(w)                                                     // plain key (space)
-#define KB_KEY(w) KB_CTRL(LV_BUTTONMATRIX_CTRL_POPOVER | (w))                  // letter: shows a popover
+#define KB_W(w) KB_CTRL(w)
+#define KB_KEY(w) KB_CTRL(LV_BUTTONMATRIX_CTRL_POPOVER | (w))
 #define KB_MOD(w) KB_CTRL(LV_BUTTONMATRIX_CTRL_CHECKED | LV_BUTTONMATRIX_CTRL_NO_REPEAT | LV_BUTTONMATRIX_CTRL_CLICK_TRIG | (w))
-#define KB_DEL KB_CTRL(LV_BUTTONMATRIX_CTRL_CHECKED | 6)                       // backspace repeats when held
-
+#define KB_DEL KB_CTRL(LV_BUTTONMATRIX_CTRL_CHECKED | 6)
 static const char* const kKbLower[] = {
-    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "\n",
-    "q", "w", "e", "r", "t", "y", "u", "i", "o", "p", "\n",
-    "a", "s", "d", "f", "g", "h", "j", "k", "l", "\n",
-    "ABC", "z", "x", "c", "v", "b", "n", "m", LV_SYMBOL_BACKSPACE, "\n",
-    "1#", "-", " ", ".", LV_SYMBOL_OK, ""};
+    "1","2","3","4","5","6","7","8","9","0","\n",
+    "q","w","e","r","t","y","u","i","o","p","\n",
+    "a","s","d","f","g","h","j","k","l","\n",
+    "ABC","z","x","c","v","b","n","m",LV_SYMBOL_BACKSPACE,"\n",
+    "1#","-"," ",".",LV_SYMBOL_OK,""};
 static const char* const kKbUpper[] = {
-    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "\n",
-    "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "\n",
-    "A", "S", "D", "F", "G", "H", "J", "K", "L", "\n",
-    "abc", "Z", "X", "C", "V", "B", "N", "M", LV_SYMBOL_BACKSPACE, "\n",
-    "1#", "_", " ", ".", LV_SYMBOL_OK, ""};
+    "1","2","3","4","5","6","7","8","9","0","\n",
+    "Q","W","E","R","T","Y","U","I","O","P","\n",
+    "A","S","D","F","G","H","J","K","L","\n",
+    "abc","Z","X","C","V","B","N","M",LV_SYMBOL_BACKSPACE,"\n",
+    "1#","_"," ",".",LV_SYMBOL_OK,""};
 static const lv_buttonmatrix_ctrl_t kKbLetterCtrl[] = {
-    KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4),
-    KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4),
-    KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4),
-    KB_MOD(6), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_DEL,
-    KB_MOD(6), KB_KEY(3), KB_W(14), KB_KEY(3), KB_MOD(6)};
+    KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),
+    KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),
+    KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),
+    KB_MOD(6),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_DEL,
+    KB_MOD(6),KB_KEY(3),KB_W(14),KB_KEY(3),KB_MOD(6)};
 static const char* const kKbSpecial[] = {
-    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "\n",
-    "!", "@", "#", "$", "%", "^", "&", "*", "(", ")", "\n",
-    "-", "_", "=", "+", "[", "]", "{", "}", ";", ":", "\n",
-    "abc", "'", "\"", "/", "\\", "?", "<", ">", LV_SYMBOL_BACKSPACE, "\n",
-    "ABC", ",", " ", ".", LV_SYMBOL_OK, ""};
+    "1","2","3","4","5","6","7","8","9","0","\n",
+    "!","@","#","$","%","^","&","*","(",")","\n",
+    "-","_","=","+","[","]","{","}",";",":","\n",
+    "abc","'","\"","/","\\","?","<",">",LV_SYMBOL_BACKSPACE,"\n",
+    "ABC",","," ",".",LV_SYMBOL_OK,""};
 static const lv_buttonmatrix_ctrl_t kKbSpecialCtrl[] = {
-    KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4),
-    KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4),
-    KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4),
-    KB_MOD(6), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_KEY(4), KB_DEL,
-    KB_MOD(6), KB_KEY(3), KB_W(14), KB_KEY(3), KB_MOD(6)};
-
-// Be Vietnam Pro for the keys, Montserrat only for the ⌫ / ✓ symbols it lacks.
+    KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),
+    KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),
+    KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),
+    KB_MOD(6),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_KEY(4),KB_DEL,
+    KB_MOD(6),KB_KEY(3),KB_W(14),KB_KEY(3),KB_MOD(6)};
 lv_font_t s_kbFont;
-
-// Per-key drawing tweaks:
-//  - the OK key uses the palette accent with dark text;
-//  - Be Vietnam Pro reserves room above the cap height for stacked Vietnamese
-//    marks, so single unaccented key labels (q, 1, ABC) sit ~2 px below centre.
-//    Nudge them up.  LV_SYMBOL_* glyphs (U+F0xx, UTF-8 lead byte 0xEF) come from
-//    Montserrat, which has no such headroom, and stay where LVGL puts them.
 constexpr int32_t kKeyLabelLift = 2;
-
 void kbDrawTask(lv_event_t* e) {
     lv_draw_task_t* t = lv_event_get_draw_task(e);
     auto* base = static_cast<lv_draw_dsc_base_t*>(lv_draw_task_get_draw_dsc(t));
-    if (!base || base->part != LV_PART_ITEMS) return;
+    if (!base || base->part != LV_PART_ITEMS || !ui.kb) return;
     const char* txt = lv_buttonmatrix_get_button_text(ui.kb, base->id1);
     if (!txt) return;
     const bool ok = strcmp(txt, LV_SYMBOL_OK) == 0;
@@ -2446,9 +2647,7 @@ void kbDrawTask(lv_event_t* e) {
 void buildKeyboard(lv_obj_t* parent) {
     s_kbFont = hmi_font_16_sb;
     s_kbFont.fallback = &lv_font_montserrat_16;
-
     ui.kb = lv_keyboard_create(parent);
-    // lv_keyboard_create() aligns to BOTTOM_MID; re-anchor so the position is absolute.
     lv_obj_align(ui.kb, LV_ALIGN_TOP_LEFT, 0, 188);
     lv_obj_set_size(ui.kb, 480, 292);
     lv_keyboard_set_map(ui.kb, LV_KEYBOARD_MODE_TEXT_LOWER, kKbLower, kKbLetterCtrl);
@@ -2456,7 +2655,6 @@ void buildKeyboard(lv_obj_t* parent) {
     lv_keyboard_set_map(ui.kb, LV_KEYBOARD_MODE_SPECIAL, kKbSpecial, kKbSpecialCtrl);
     lv_keyboard_set_mode(ui.kb, LV_KEYBOARD_MODE_TEXT_LOWER);
     lv_keyboard_set_popovers(ui.kb, true);
-
     lv_obj_set_style_bg_color(ui.kb, bg(), 0);
     lv_obj_set_style_bg_opa(ui.kb, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(ui.kb, 0, 0);
@@ -2466,8 +2664,6 @@ void buildKeyboard(lv_obj_t* parent) {
     lv_obj_set_style_pad_bottom(ui.kb, 10, 0);
     lv_obj_set_style_pad_row(ui.kb, 7, 0);
     lv_obj_set_style_pad_column(ui.kb, 5, 0);
-
-    // Letter keys: lifted grey; modifier keys (CHECKED): darker; pressed: lighter.
     lv_obj_set_style_bg_opa(ui.kb, LV_OPA_COVER, LV_PART_ITEMS);
     lv_obj_set_style_bg_color(ui.kb, lv_color_hex(0x262626), LV_PART_ITEMS);
     lv_obj_set_style_bg_color(ui.kb, lv_color_hex(0x161616), LV_PART_ITEMS | LV_STATE_CHECKED);
@@ -2479,7 +2675,6 @@ void buildKeyboard(lv_obj_t* parent) {
     lv_obj_set_style_border_width(ui.kb, 0, LV_PART_ITEMS);
     lv_obj_set_style_shadow_width(ui.kb, 0, LV_PART_ITEMS);
     lv_obj_set_style_outline_width(ui.kb, 0, LV_PART_ITEMS | LV_STATE_FOCUS_KEY);
-
     lv_obj_add_flag(ui.kb, LV_OBJ_FLAG_SEND_DRAW_TASK_EVENTS);
     lv_obj_add_event_cb(ui.kb, kbDrawTask, LV_EVENT_DRAW_TASK_ADDED, nullptr);
     lv_keyboard_set_textarea(ui.kb, ui.pass);
@@ -2487,25 +2682,23 @@ void buildKeyboard(lv_obj_t* parent) {
     lv_obj_add_event_cb(ui.kb, [](lv_event_t*) { closeSheet(); }, LV_EVENT_CANCEL, nullptr);
 }
 
+void sheetLayout(bool secure);
+
 void buildSheet(lv_obj_t* scr) {
     ui.sheet = box(scr);
     lv_obj_set_size(ui.sheet, 480, 480);
     lv_obj_set_style_bg_opa(ui.sheet, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(ui.sheet, bg(), 0);
-    lv_obj_add_flag(ui.sheet, LV_OBJ_FLAG_CLICKABLE);  // swallow taps meant for the page below
+    lv_obj_add_flag(ui.sheet, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(ui.sheet, LV_OBJ_FLAG_HIDDEN);
-
-    // Same back bar as the sub-pages; two centred lines: title, network name.
     lv_obj_t* back = iconButton(ui.sheet, ICON_BACK, "Đóng");
     lv_obj_set_size(back, kBarBtn, kBarBtn);
     lv_obj_set_pos(back, kBarLeftX, kBarBtnY);
     lv_obj_add_event_cb(back, [](lv_event_t*) { closeSheet(); }, LV_EVENT_CLICKED, nullptr);
     lv_obj_t* t = label(ui.sheet, &hmi_font_16_sb, text(), "Kết nối Wi-Fi");
-    barTitle(t);
-    lv_obj_set_y(t, kBarTitleY - 9);
+    barTitle(t); lv_obj_set_y(t, kBarTitleY - 9);
     ui.sheetSsid = label(ui.sheet, &hmi_font_13_r, muted(), "");
-    barTitle(ui.sheetSsid);
-    lv_obj_set_y(ui.sheetSsid, kBarTitleY + 13);
+    barTitle(ui.sheetSsid); lv_obj_set_y(ui.sheetSsid, kBarTitleY + 13);
 
     ui.pass = lv_textarea_create(ui.sheet);
     lv_obj_remove_style_all(ui.pass);
@@ -2516,14 +2709,9 @@ void buildSheet(lv_obj_t* scr) {
     lv_obj_set_style_radius(ui.pass, 12, 0);
     lv_obj_set_style_pad_left(ui.pass, 16, 0);
     lv_obj_set_style_pad_right(ui.pass, 56, 0);
-    // 52 px box, 1 px focus border, 24 px line.  The content box must be exactly
-    // one line tall (52 - 2 - 11 - 15 = 24): any smaller and the one-line
-    // textarea scrolls the text out of view.  11/15 instead of 13/13 lifts the
-    // text 2 px, because Be Vietnam Pro keeps headroom above the caps for
-    // stacked Vietnamese marks (same lift as the keyboard keys).
     lv_obj_set_style_pad_top(ui.pass, 11, 0);
     lv_obj_set_style_pad_bottom(ui.pass, 15, 0);
-    lv_obj_set_style_border_width(ui.pass, 1, 0);  // same box in every state
+    lv_obj_set_style_border_width(ui.pass, 1, 0);
     lv_obj_set_style_border_color(ui.pass, surface(), 0);
     lv_obj_set_scroll_dir(ui.pass, LV_DIR_HOR);
     lv_obj_set_style_border_width(ui.pass, 1, LV_STATE_FOCUSED);
@@ -2563,8 +2751,9 @@ void buildSheet(lv_obj_t* scr) {
     lv_obj_add_flag(ui.joinSpinner, LV_OBJ_FLAG_HIDDEN);
     ui.joinStatus = label(ui.sheet, &hmi_font_13_r, muted(), "");
     lv_obj_set_pos(ui.joinStatus, kMargin, 145);
-    lv_obj_set_width(ui.joinStatus, 280);
-    lv_label_set_long_mode(ui.joinStatus, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(ui.joinStatus, 448);
+    lv_label_set_long_mode(ui.joinStatus, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(ui.joinStatus, LV_TEXT_ALIGN_LEFT, 0);
 
     ui.joinBtn = box(ui.sheet);
     lv_obj_set_pos(ui.joinBtn, 480 - kMargin - 140, 132);
@@ -2581,8 +2770,6 @@ void buildSheet(lv_obj_t* scr) {
     lv_obj_center(ui.joinBtnText);
     lv_obj_add_event_cb(ui.joinBtn, [](lv_event_t*) { submitJoin(); }, LV_EVENT_CLICKED, nullptr);
 
-    // Open network: a note takes the password field's place and the button
-    // spans the width (see sheetLayout()).
     ui.openNote = box(ui.sheet);
     lv_obj_set_pos(ui.openNote, kMargin, 72);
     lv_obj_set_size(ui.openNote, 448, LV_SIZE_CONTENT);
@@ -2602,31 +2789,23 @@ void buildSheet(lv_obj_t* scr) {
     lv_label_set_long_mode(ui.openNoteText, LV_LABEL_LONG_WRAP);
     lv_obj_add_flag(ui.openNote, LV_OBJ_FLAG_HIDDEN);
 
-    // Saved network: offer typing a new password instead.
     ui.otherPass = box(ui.sheet);
     lv_obj_set_size(ui.otherPass, 448, 44);
     lv_obj_set_style_radius(ui.otherPass, 12, 0);
     makeClickable(ui.otherPass);
     lv_obj_t* op = label(ui.otherPass, &hmi_font_14_m, accent(), "Nhập mật khẩu khác");
     lv_obj_center(op);
-    lv_obj_add_event_cb(ui.otherPass, [](lv_event_t*) {
-        ui.joinSaved = false;
-        sheetLayout(true);
-    }, LV_EVENT_CLICKED, nullptr);
+    lv_obj_add_event_cb(ui.otherPass, [](lv_event_t*) { ui.joinSaved = false; sheetLayout(true); }, LV_EVENT_CLICKED, nullptr);
     lv_obj_add_flag(ui.otherPass, LV_OBJ_FLAG_HIDDEN);
 
     buildKeyboard(ui.sheet);
 }
 
-// Secured: password field, small button on the right, status beside it,
-// keyboard below.  Open or saved network: note card, full-width button,
-// status under it (saved: plus "Nhập mật khẩu khác").
 void sheetLayout(bool secure) {
     if (!secure) {
         const bool saved = ui.joinSaved;
         lv_label_set_text(ui.openNoteTitle, saved ? "Đã lưu mật khẩu" : "Mạng mở");
-        lv_label_set_text(ui.openNoteText, saved ? "Kết nối bằng mật khẩu đã lưu trên panel"
-                                                 : "Không cần mật khẩu · dữ liệu không được mã hoá");
+        lv_label_set_text(ui.openNoteText, saved ? "Kết nối bằng mật khẩu đã lưu trên panel" : "Không cần mật khẩu · dữ liệu không được mã hoá");
         lv_label_set_text(ui.openNoteIcon, saved ? ICON_LOCK : ICON_WIFI);
         if (saved) lv_obj_remove_flag(ui.otherPass, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_pos(ui.otherPass, kMargin, 72 + 76 + 16 + 52 + 12);
@@ -2634,48 +2813,234 @@ void sheetLayout(bool secure) {
     if (secure || !ui.joinSaved) lv_obj_add_flag(ui.otherPass, LV_OBJ_FLAG_HIDDEN);
     const lv_obj_flag_t h = LV_OBJ_FLAG_HIDDEN;
     for (lv_obj_t* o : {ui.pass, ui.eye, ui.kb}) {
-        if (secure) lv_obj_remove_flag(o, h);
-        else lv_obj_add_flag(o, h);
+        if (secure) lv_obj_remove_flag(o, h); else lv_obj_add_flag(o, h);
     }
-    if (secure) lv_obj_add_flag(ui.openNote, h);
-    else lv_obj_remove_flag(ui.openNote, h);
+    if (secure) lv_obj_add_flag(ui.openNote, h); else lv_obj_remove_flag(ui.openNote, h);
     const int32_t statusY = secure ? 145 : 72 + 76 + 16 + 52 + (ui.joinSaved ? 12 + 44 + 12 : 16);
     lv_obj_set_y(ui.joinStatus, statusY);
     lv_obj_set_y(ui.joinSpinner, statusY - 1);
     lv_obj_set_width(ui.joinStatus, secure ? 280 : 448);
-    if (secure) {
-        lv_obj_set_pos(ui.joinBtn, 480 - kMargin - 140, 132);
-        lv_obj_set_size(ui.joinBtn, 140, 44);
-    } else {
-        lv_obj_set_pos(ui.joinBtn, kMargin, 72 + 76 + 16);
-        lv_obj_set_size(ui.joinBtn, 448, 52);
-    }
+    if (secure) { lv_obj_set_pos(ui.joinBtn, 480 - kMargin - 140, 132); lv_obj_set_size(ui.joinBtn, 140, 44); }
+    else { lv_obj_set_pos(ui.joinBtn, kMargin, 72 + 76 + 16); lv_obj_set_size(ui.joinBtn, 448, 52); }
 }
 
 void applyJoin(const Model& m) {
-    if (lv_obj_has_flag(ui.sheet, LV_OBJ_FLAG_HIDDEN)) return;
+    if (!ui.sheet || lv_obj_has_flag(ui.sheet, LV_OBJ_FLAG_HIDDEN)) return;
     char buf[64];
     switch (m.join) {
-        case WifiJoin::Idle:
-            break;
-        case WifiJoin::Connecting:
-            setJoinStatus("Đang kết nối…", muted(), true);
-            break;
-        case WifiJoin::Failed:
-            setJoinStatus(m.joinMessage, error(), false);
-            break;
+        case WifiJoin::Idle: break;
+        case WifiJoin::Connecting: setJoinStatus("Đang kết nối…", warning(), true); break;
+        case WifiJoin::Failed: setJoinStatus(m.joinMessage, warning(), false); break;
         case WifiJoin::Connected: {
             snprintf(buf, sizeof(buf), "Đã kết nối · %s", m.joinMessage);
             setJoinStatus(buf, success(), false);
             lv_obj_add_state(ui.joinBtn, LV_STATE_DISABLED);
-            lv_timer_t* t = lv_timer_create([](lv_timer_t*) {
-                closeSheet();
-                selectPage(P_SETTINGS);
-            }, 1500, nullptr);
+            lv_timer_t* t = lv_timer_create([](lv_timer_t*) { closeSheet(); selectPage(P_SETTINGS); }, 1500, nullptr);
             lv_timer_set_repeat_count(t, 1);
             break;
         }
     }
+}
+
+bool parseMacText(const char* text, uint8_t mac[6]) {
+    if (!text) return false;
+    unsigned v[6] = {};
+    if (sscanf(text, "%02x:%02x:%02x:%02x:%02x:%02x", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) == 6 ||
+        sscanf(text, "%02X:%02X:%02X:%02X:%02X:%02X", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) == 6) {
+        for (int i = 0; i < 6; i++) mac[i] = (uint8_t)v[i];
+        return true;
+    }
+    return false;
+}
+
+void formatMacText(const uint8_t mac[6], char out[18]) {
+    snprintf(out, 18, "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
+bool parseHex32(const char* text, char out[33]) {
+    if (!text) return false;
+    while (*text == ' ' || *text == '\t') text++;
+    size_t n = strlen(text);
+    while (n && (text[n - 1] == ' ' || text[n - 1] == '\t' || text[n - 1] == '\r' || text[n - 1] == '\n')) n--;
+    if (n == 0) { out[0] = 0; return true; }  // empty = keep current
+    if (n != 32) return false;
+    for (size_t i = 0; i < 32; i++) {
+        char c = text[i];
+        bool ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        if (!ok) return false;
+        out[i] = (c >= 'a' && c <= 'f') ? (char)(c - 'a' + 'A') : c;
+    }
+    out[32] = 0;
+    return true;
+}
+
+lv_obj_t* espnowTextarea(lv_obj_t* parent, const char* placeholder, bool password, uint16_t maxLen) {
+    lv_obj_t* ta = lv_textarea_create(parent);
+    lv_obj_set_width(ta, LV_PCT(100));
+    lv_obj_set_height(ta, 48);
+    lv_textarea_set_one_line(ta, true);
+    lv_textarea_set_placeholder_text(ta, placeholder);
+    lv_textarea_set_max_length(ta, maxLen);
+    lv_textarea_set_password_mode(ta, password);
+    lv_obj_set_style_bg_color(ta, elevated(), 0);
+    lv_obj_set_style_bg_opa(ta, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(ta, 1, 0);
+    lv_obj_set_style_border_color(ta, elevated(), 0);
+    lv_obj_set_style_radius(ta, 12, 0);
+    lv_obj_set_style_text_color(ta, text(), 0);
+    lv_obj_set_style_text_font(ta, &hmi_font_14_m, 0);
+    lv_obj_set_style_pad_hor(ta, 12, 0);
+    lv_obj_set_style_pad_ver(ta, 10, 0);
+    lv_obj_add_style(ta, &focusRing, LV_STATE_FOCUSED);
+    lv_obj_add_event_cb(ta, [](lv_event_t* e) {
+        ui.espnowFocus = static_cast<lv_obj_t*>(lv_event_get_target(e));
+        if (ui.espnowKb) lv_keyboard_set_textarea(ui.espnowKb, ui.espnowFocus);
+    }, LV_EVENT_FOCUSED, nullptr);
+    lv_obj_add_event_cb(ta, [](lv_event_t* e) {
+        ui.espnowFocus = static_cast<lv_obj_t*>(lv_event_get_target(e));
+        if (ui.espnowKb) lv_keyboard_set_textarea(ui.espnowKb, ui.espnowFocus);
+    }, LV_EVENT_CLICKED, nullptr);
+    lv_group_add_obj(lv_group_get_default(), ta);
+    return ta;
+}
+
+void closeEspNowEditor() {
+    if (ui.espnowKb) lv_keyboard_set_textarea(ui.espnowKb, nullptr);
+    if (ui.espnowSheet) lv_obj_add_flag(ui.espnowSheet, LV_OBJ_FLAG_HIDDEN);
+    ui.espnowFocus = nullptr;
+}
+
+void openEspNowEditor();
+
+void saveEspNowEditor() {
+    if (!ui.espnowMac) return;
+    uint8_t mac[6];
+    const char* macText = lv_textarea_get_text(ui.espnowMac);
+    if (!parseMacText(macText, mac)) {
+        if (ui.espnowStatus) {
+            lv_label_set_text(ui.espnowStatus, "MAC không hợp lệ. Ví dụ: AA:BB:CC:DD:EE:FF");
+            lv_obj_set_style_text_color(ui.espnowStatus, error(), 0);
+        }
+        return;
+    }
+    const char* chText = ui.espnowChannel ? lv_textarea_get_text(ui.espnowChannel) : "1";
+    int ch = atoi(chText ? chText : "1");
+    if (ch < 1 || ch > 13) ch = ESPNOW_CHANNEL;
+    char pmk[33] = {}, lmk[33] = {};
+    if (!parseHex32(ui.espnowPmk ? lv_textarea_get_text(ui.espnowPmk) : "", pmk) ||
+        !parseHex32(ui.espnowLmk ? lv_textarea_get_text(ui.espnowLmk) : "", lmk)) {
+        if (ui.espnowStatus) {
+            lv_label_set_text(ui.espnowStatus, "PMK/LMK phải là 32 ký tự hex hoặc để trống để giữ nguyên.");
+            lv_obj_set_style_text_color(ui.espnowStatus, error(), 0);
+        }
+        return;
+    }
+    EspNowUiConfig cfg = s_snap.espnowCfg;
+    formatMacText(mac, cfg.masterMac);
+    cfg.channel = (uint8_t)ch;
+    if (pmk[0]) strlcpy(cfg.pmk, pmk, sizeof(cfg.pmk));
+    if (lmk[0]) strlcpy(cfg.lmk, lmk, sizeof(cfg.lmk));
+    cfg.enabled = true;
+    if (ui.espnowStatus) {
+        lv_label_set_text(ui.espnowStatus, "Đang lưu…");
+        lv_obj_set_style_text_color(ui.espnowStatus, muted(), 0);
+    }
+    if (ui.cb.espnowConfigSave) ui.cb.espnowConfigSave(cfg);
+    closeEspNowEditor();
+}
+
+lv_obj_t* actionBtn(lv_obj_t* parent, const char* textStr, bool primary) {
+    lv_obj_t* b = lv_btn_create(parent);
+    lv_obj_set_height(b, 40);
+    lv_obj_set_style_radius(b, 12, 0);
+    lv_obj_set_style_shadow_width(b, 0, 0);
+    lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(b, primary ? accent() : elevated(), 0);
+    lv_obj_add_style(b, &pressedBg, LV_STATE_PRESSED);
+    lv_obj_add_style(b, &focusRing, LV_STATE_FOCUS_KEY);
+    lv_obj_t* l = label(b, &hmi_font_14_m, primary ? lv_color_white() : text(), textStr);
+    lv_obj_center(l);
+    lv_group_add_obj(lv_group_get_default(), b);
+    return b;
+}
+
+void buildEspNowEditor(lv_obj_t* scr) {
+    ui.espnowSheet = box(scr);
+    lv_obj_set_size(ui.espnowSheet, 480, 480);
+    lv_obj_set_style_bg_opa(ui.espnowSheet, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(ui.espnowSheet, bg(), 0);
+    lv_obj_add_flag(ui.espnowSheet, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui.espnowSheet, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(ui.espnowSheet, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* top = box(ui.espnowSheet);
+    lv_obj_set_size(top, 480, 292);
+    lv_obj_set_pos(top, 0, 0);
+    lv_obj_set_style_pad_hor(top, 16, 0);
+    lv_obj_set_style_pad_top(top, 12, 0);
+    lv_obj_set_style_pad_bottom(top, 8, 0);
+    lv_obj_set_flex_flow(top, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(top, 8, 0);
+    lv_obj_clear_flag(top, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* head = box(top);
+    lv_obj_set_size(head, LV_PCT(100), 40);
+    lv_obj_set_flex_flow(head, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(head, 8, 0);
+    lv_obj_t* back = iconButton(head, ICON_BACK, "Đóng");
+    lv_obj_set_size(back, 40, 40);
+    lv_obj_add_event_cb(back, [](lv_event_t*) { closeEspNowEditor(); }, LV_EVENT_CLICKED, nullptr);
+    label(head, &hmi_font_16_sb, text(), "Cấu hình ESP-NOW");
+
+    ui.espnowMac = espnowTextarea(top, "MAC master AA:BB:CC:DD:EE:FF", false, 17);
+    ui.espnowChannel = espnowTextarea(top, "Kênh Wi-Fi/ESP-NOW (1-13)", false, 2);
+    ui.espnowPmk = espnowTextarea(top, "PMK 32 hex (trống = giữ nguyên)", false, 32);
+    ui.espnowLmk = espnowTextarea(top, "LMK 32 hex (trống = giữ nguyên)", false, 32);
+
+    ui.espnowStatus = label(top, &hmi_font_13_r, muted(), "Lưu vào /config.json và áp dụng ngay, không cần nạp lại firmware.");
+    lv_obj_set_width(ui.espnowStatus, LV_PCT(100));
+    lv_label_set_long_mode(ui.espnowStatus, LV_LABEL_LONG_WRAP);
+
+    lv_obj_t* actions = box(top);
+    lv_obj_set_size(actions, LV_PCT(100), 44);
+    lv_obj_set_flex_flow(actions, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(actions, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(actions, 8, 0);
+    lv_obj_t* cancel = actionBtn(actions, "Huỷ", false);
+    lv_obj_set_size(cancel, 96, 40);
+    lv_obj_add_event_cb(cancel, [](lv_event_t*) { closeEspNowEditor(); }, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t* save = actionBtn(actions, "Lưu", true);
+    lv_obj_set_size(save, 96, 40);
+    lv_obj_add_event_cb(save, [](lv_event_t*) { saveEspNowEditor(); }, LV_EVENT_CLICKED, nullptr);
+
+    ui.espnowKb = lv_keyboard_create(ui.espnowSheet);
+    lv_obj_set_size(ui.espnowKb, 480, 188);
+    lv_obj_align(ui.espnowKb, LV_ALIGN_BOTTOM_MID, 0, 0);
+    // LV_SYMBOL_* keys (backspace/OK/mode arrows) live in Montserrat; custom UI font lacks them.
+    lv_obj_set_style_text_font(ui.espnowKb, &lv_font_montserrat_16, LV_PART_ITEMS);
+    lv_obj_add_event_cb(ui.espnowKb, [](lv_event_t* e) {
+        if (lv_event_get_code(e) == LV_EVENT_READY) saveEspNowEditor();
+        if (lv_event_get_code(e) == LV_EVENT_CANCEL) closeEspNowEditor();
+    }, LV_EVENT_ALL, nullptr);
+}
+
+void openEspNowEditor() {
+    if (!ui.espnowSheet) return;
+    const EspNowUiConfig& c = s_snap.espnowCfg;
+    if (ui.espnowMac) lv_textarea_set_text(ui.espnowMac, c.masterMac);
+    char ch[8]; snprintf(ch, sizeof(ch), "%u", c.channel ? c.channel : ESPNOW_CHANNEL);
+    if (ui.espnowChannel) lv_textarea_set_text(ui.espnowChannel, ch);
+    if (ui.espnowPmk) lv_textarea_set_text(ui.espnowPmk, "");
+    if (ui.espnowLmk) lv_textarea_set_text(ui.espnowLmk, "");
+    if (ui.espnowStatus) {
+        lv_label_set_text(ui.espnowStatus, "Để trống PMK/LMK để giữ key hiện tại. Kênh phải khớp master Spotpear.");
+        lv_obj_set_style_text_color(ui.espnowStatus, muted(), 0);
+    }
+    lv_obj_remove_flag(ui.espnowSheet, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(ui.espnowSheet);
+    ui.espnowFocus = ui.espnowMac;
+    if (ui.espnowKb) lv_keyboard_set_textarea(ui.espnowKb, ui.espnowMac);
 }
 
 // ---------- firmware update overlay ----------
@@ -2715,38 +3080,26 @@ void applyUpdate(const Model& m) {
 }
 
 void applySystem(const Model& m) {
-    char buf[64];
     const SystemInfo& s = m.sys;
-    switch (m.link) {
-        case Link::Online:
-        case Link::BrokerDown:
-            snprintf(buf, sizeof(buf), "%s · %d dBm", s.ssid, s.rssi);
-            lv_label_set_text(ui.sysWifi, buf);
-            lv_obj_set_style_text_color(ui.sysWifi, muted(), 0);
-            break;
-        case Link::Offline:
-            lv_label_set_text(ui.sysWifi, "Mất kết nối");
-            lv_obj_set_style_text_color(ui.sysWifi, warning(), 0);
-            break;
-        case Link::Connecting:
-            lv_label_set_text(ui.sysWifi, "Đang kết nối…");
-            lv_obj_set_style_text_color(ui.sysWifi, muted(), 0);
-            break;
+    if (ui.sysWifi) {
+        const bool wifi = m.link == Link::Online || m.link == Link::BrokerDown;
+        lv_label_set_text(ui.sysWifi, wifi && s.ssid[0] ? s.ssid : (m.link == Link::Connecting ? "Đang kết nối…" : "Chưa kết nối"));
+        lv_obj_set_style_text_color(ui.sysWifi, wifi ? muted() : warning(), 0);
     }
-    // Mạng & MQTT: the address when all is well, else what is wrong.
-    if (m.link == Link::Online) {
-        lv_label_set_text(ui.sysIp, s.ip[0] ? s.ip : "–");
-        lv_obj_set_style_text_color(ui.sysIp, muted(), 0);
-    } else {
-        lv_label_set_text(ui.sysIp, m.link == Link::BrokerDown ? "MQTT lỗi" : "Chờ Wi-Fi");
-        lv_obj_set_style_text_color(ui.sysIp, m.link == Link::BrokerDown ? warning() : muted(), 0);
+    if (ui.sysEspnow) {
+        char ebuf[48];
+        snprintf(ebuf, sizeof(ebuf), s.espnowReady ? "CH%u · %u thiết bị" : "CH%u · chờ", (unsigned)(m.espnowCfg.channel ? m.espnowCfg.channel : ESPNOW_CHANNEL), (unsigned)s.espnowNodes);
+        lv_label_set_text(ui.sysEspnow, ebuf);
+        lv_obj_set_style_text_color(ui.sysEspnow, s.espnowReady ? muted() : warning(), 0);
     }
-    // Hệ thống: internal RAM use and uptime.
-    const uint32_t ramPct = s.heapTotalKB ? (s.heapTotalKB - s.heapKB) * 100 / s.heapTotalKB : 0;
-    const uint32_t min = s.uptimeS / 60;
-    if (min >= 60) snprintf(buf, sizeof(buf), "RAM %lu%% · %lu giờ", (unsigned long)ramPct, (unsigned long)(min / 60));
-    else snprintf(buf, sizeof(buf), "RAM %lu%% · %lu phút", (unsigned long)ramPct, (unsigned long)min);
-    lv_label_set_text(ui.sysMem, buf);
+    if (ui.sysMem) {
+        char mb[32]; snprintf(mb, sizeof(mb), "%lu KB trống", (unsigned long)s.heapKB);
+        lv_label_set_text(ui.sysMem, mb);
+    }
+    if (ui.sysUptime) {
+        char ub[32]; unsigned h=s.uptimeS/3600, mi=(s.uptimeS%3600)/60; snprintf(ub,sizeof(ub),"%uh %02um",h,mi);
+        lv_label_set_text(ui.sysUptime, ub);
+    }
 }
 
 // ---------- header state ----------
@@ -2755,7 +3108,7 @@ void applyLink(const Model& m) {
     static const char* const captions[] = {
         "Đang kết nối…", "Đã kết nối · MQTT", "Wi-Fi OK · MQTT mất kết nối", "Mất kết nối · đang thử lại"};
     const auto idx = static_cast<uint8_t>(m.link);
-    const bool problem = m.link == Link::BrokerDown || m.link == Link::Offline;
+    const bool problem = m.link == Link::BrokerDown || m.link == Link::Offline || m.link == Link::Connecting;
     lv_label_set_text(ui.caption, captions[idx]);
     lv_obj_set_style_text_color(ui.caption, problem ? warning() : muted(), 0);
     lv_label_set_text(ui.wifi, m.link == Link::Offline ? ICON_WIFI_OFF : ICON_WIFI);
@@ -2765,7 +3118,7 @@ void applyLink(const Model& m) {
 
 // ---------- backlight / auto-dim ----------
 
-// Screensaver: the HCMUT lockup centred on black.  It moves by at most 4 px a
+// Screensaver: the Nova lockup centred on black.  It moves by at most 4 px a
 // minute (invisible, but no pixel shows the same thing for hours; larger
 // jumps looked like a layout bug).
 void saverDrift(lv_timer_t*) {
@@ -2809,32 +3162,36 @@ void updateDim() {
 
 // ---------- public ----------
 
-// Boot splash with the HCMUT identity (brand guide lockup: logo, ĐHQG-HCM line,
-// school name).  Shown once at power-up, fades out, then deletes itself; both
-// the fade and the delete are bound to the object, so a rebuild during the
-// splash simply removes it.
-// HCMUT lockup (brand guide): logo, ĐHQG-HCM line, school name, BK-blue rule,
-// product name.  Shared by the boot splash and the screensaver.
-lv_obj_t* brandLockup(lv_obj_t* parent) {
+// Boot splash with the Nova identity.  Shown once at power-up, fades out, then
+// deletes itself; both the fade and the delete are bound to the object, so a
+// rebuild during the splash simply removes it.
+// Nova lockup: logo, Nova label, product name, accent rule.
+lv_obj_t* brandLockup(lv_obj_t* parent, bool screenSaver = false) {
     lv_obj_t* s = box(parent);
     lv_obj_set_size(s, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(s, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(s, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_row(s, 6, 0);
+    lv_obj_set_style_pad_row(s, 2, 0);
 
     lv_obj_t* logo = lv_image_create(s);
-    lv_image_set_src(logo, &bk_logo_132);
-    lv_obj_set_style_margin_bottom(logo, 22, 0);
-    lv_obj_t* top = label(s, &hmi_font_12_sb, muted(), "ĐẠI HỌC QUỐC GIA TP.HCM");
+    lv_image_set_src(logo, &nova_logo_132);
+    lv_image_set_scale(logo, 130);  // ~51% of natural 292x384 (~149x195), keeps aspect ratio, leaves room for text
+    if (screenSaver) return s;  // logo only, ~80% of 480 px screen
+
+    lv_obj_set_style_margin_bottom(logo, 6, 0);
+    lv_obj_t* top = label(s, &hmi_font_12_sb, muted(), "NOVA SMART HOME");
     lv_obj_set_style_text_letter_space(top, 1, 0);
-    label(s, &hmi_font_16_sb, text(), "TRƯỜNG ĐẠI HỌC BÁCH KHOA");
+    label(s, &hmi_font_16_sb, text(), "SMART HOME PANEL");
     lv_obj_t* bar = box(s);
     lv_obj_set_size(bar, 32, 3);
     lv_obj_set_style_radius(bar, 2, 0);
     lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(bar, lv_color_hex(0x1488DB), 0);  // BK blue, whatever the palette
-    lv_obj_set_style_margin_ver(bar, 10, 0);
-    label(s, &hmi_font_13_r, muted(), "Smart Home Panel");
+    lv_obj_set_style_bg_color(bar, accent(), 0);  // Nova accent (current palette)
+    lv_obj_set_style_margin_ver(bar, 6, 0);
+    lv_obj_t* slogan = label(s, &hmi_font_13_r, text(), "Novaland cho cuộc sống bừng sáng");
+    lv_obj_set_width(slogan, 420);
+    lv_obj_set_style_text_align(slogan, LV_TEXT_ALIGN_CENTER, 0);
+    label(s, &hmi_font_13_r, muted(), "Powered by Nova");
     return s;
 }
 
@@ -2842,7 +3199,7 @@ lv_obj_t* blackCover(lv_obj_t* scr) {
     lv_obj_t* s = box(scr);
     lv_obj_set_size(s, 480, 480);
     lv_obj_set_style_bg_opa(s, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(s, bg(), 0);
+    lv_obj_set_style_bg_color(s, lv_color_black(), 0);  // splash/saver always black
     lv_obj_add_flag(s, LV_OBJ_FLAG_CLICKABLE);  // swallow taps meant for the page below
     return s;
 }
@@ -2850,12 +3207,12 @@ lv_obj_t* blackCover(lv_obj_t* scr) {
 void buildSplash(lv_obj_t* scr) {
     lv_obj_t* s = blackCover(scr);
     lv_obj_center(brandLockup(s));
-    lv_obj_delete_delayed(s, 2000);  // no fade: see selectPage()
+    lv_obj_delete_delayed(s, 5000);  // splash stays 5s before fading to home
 }
 
 void buildSaver(lv_obj_t* scr) {
     ui.saver = blackCover(scr);
-    ui.saverLockup = brandLockup(ui.saver);
+    ui.saverLockup = brandLockup(ui.saver, true);  // logo-only, ~80% screen
     lv_obj_center(ui.saverLockup);
     lv_obj_add_flag(ui.saver, LV_OBJ_FLAG_HIDDEN);
     // A real touch is swallowed by the wake guard (port); this covers the rest.
@@ -2880,6 +3237,7 @@ void buildAll() {
     ui.dimmed = dimmed;
 
     theme::setPalette(s_snap.theme);
+    theme::setDark(s_snap.darkMode);
     theme::init();
     lv_obj_remove_style_all(scr);
     lv_obj_set_style_bg_color(scr, bg(), 0);
@@ -2899,8 +3257,9 @@ void buildAll() {
     for (uint8_t p = P_CONTROL; p < P_COUNT; p++) lv_obj_add_flag(ui.page[p], LV_OBJ_FLAG_HIDDEN);
     buildHeader(scr);
     buildNav(scr);
-    buildSheet(scr);
     buildUpdateOverlay(scr);
+    buildEspNowEditor(scr);
+    buildSheet(scr);
     buildSaver(scr);
     if (ui.dimmed) showSaver(true);  // palette changed while the saver was up
     ui.detailTopic = topic;
@@ -2977,8 +3336,7 @@ void serveRequests() {
         } else if (r.type == REQ_DETAIL) {
             if (r.page < T_COUNT) openDetail(r.page);
         } else if (r.type == REQ_KEYBOARD) {
-            WifiNetwork n{"Wi-Fi thử nghiệm", -58, r.page == 0};  // page 1: open network
-            openSheet(n);
+            
         } else if (r.type == REQ_FILE) {
             openFile(s_reqPath);
         } else if (r.type == REQ_BENCH) {
@@ -3008,13 +3366,14 @@ void tick() {
     }
     const Model& m = s_snap;
     if (d & D_PRIMARY) applyPrimary(m);
-    if (d & D_METRICS) applyMetrics(m);
+    if (d & D_METRICS) { applyMetrics(m); applyControlInfo(m); }
     if (d & D_LINK) applyLink(m);
     if (d & D_CLOCK) {
         lv_label_set_text(ui.clock, m.clock);
         const bool synced = m.clock[0] != '-';  // "--:--" until NTP answers
         if (synced) lv_obj_remove_flag(ui.clock, LV_OBJ_FLAG_HIDDEN);
         else lv_obj_add_flag(ui.clock, LV_OBJ_FLAG_HIDDEN);
+        applyControlInfo(m);
     }
     if (d & D_RELAYS) applyRelays(m);
     if (d & D_BRIGHTNESS) {
@@ -3024,8 +3383,7 @@ void tick() {
     }
     if (d & D_AUTODIM) setChecked(ui.dimSwitch, m.autoDim);
     if ((d & D_SYSTEM) && ui.current == P_SETTINGS) applySystem(m);
-    const bool wifiSsidChanged = (d & D_SYSTEM) && strcmp(ui.wifiRenderedSsid, m.sys.ssid) != 0;
-    if ((d & (D_WIFI_LIST | D_LINK) || wifiSsidChanged) && ui.current == P_WIFI) applyWifiList(m);
+    if (d & D_WIFI_LIST) applyWifiList(m);
     if (d & D_WIFI_JOIN) applyJoin(m);
     if (d & D_STORAGE) applyStorage(m);
     if (d & D_UPDATE) applyUpdate(m);
@@ -3033,7 +3391,7 @@ void tick() {
     if (d & D_DEVICES) applyDevices(m);
     // Memory, history and events refresh themselves (liveMemory / liveData).
     const bool selfRefresh = ui.detailTopic == T_MEMORY || ui.detailTopic == T_HISTORY || ui.detailTopic == T_EVENTS;
-    if ((d & (D_SYSTEM | D_STORAGE | D_LINK | D_CLOCK)) && ui.current == P_DETAIL && !selfRefresh) applyDetail(m);
+    if ((d & (D_SYSTEM | D_STORAGE | D_LINK | D_CLOCK | D_ESPNOW_CFG)) && ui.current == P_DETAIL && !selfRefresh) applyDetail(m);
     liveMemory();
     liveData();
     if (d & D_FILES) applyFiles(m);
@@ -3051,7 +3409,9 @@ void uiTask(void*) {
     {
         ModelLock lock;
         s_snap = model();
-        model().dirty &= ~D_THEME;  // the first build below already uses the palette
+        theme::setPalette(s_snap.theme);
+        theme::setDark(s_snap.darkMode);
+        model().dirty &= ~D_THEME;  // the first build below already uses the palette/mode
     }
     buildAll();
     esp_task_wdt_add(nullptr);

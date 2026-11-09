@@ -89,6 +89,13 @@ void setTheme(uint8_t index) {
     model().dirty |= D_THEME;
 }
 
+void setDarkMode(bool on) {
+    ModelLock lock;
+    if (model().darkMode == on) return;
+    model().darkMode = on;
+    model().dirty |= D_THEME;
+}
+
 void setRoomName(const char* name) {
     ModelLock lock;
     if (!name || !name[0] || strcmp(model().room, name) == 0) return;
@@ -96,28 +103,8 @@ void setRoomName(const char* name) {
     model().dirty |= D_ROOM;
 }
 
-void setWifiNetworks(const WifiNetwork* list, uint8_t count) {
-    ModelLock lock;
-    Model& m = model();
-    m.networkCount = count > 20 ? 20 : count;
-    memcpy(m.networks, list, sizeof(WifiNetwork) * m.networkCount);
-    m.dirty |= D_WIFI_LIST;
-}
 
-void setWifiScanning(bool scanning) {
-    ModelLock lock;
-    if (model().scanning == scanning) return;
-    model().scanning = scanning;
-    model().dirty |= D_WIFI_LIST;
-}
 
-void setWifiJoin(WifiJoin state, const char* message) {
-    ModelLock lock;
-    Model& m = model();
-    m.join = state;
-    strlcpy(m.joinMessage, message ? message : "", sizeof(m.joinMessage));
-    m.dirty |= D_WIFI_JOIN;
-}
 
 void setStorage(const StorageInfo& info) {
     ModelLock lock;
@@ -192,6 +179,36 @@ void setSystemInfo(const SystemInfo& info) {
     Model& m = model();
     m.sys = info;  // the net task already rate-limits this to every 5 s
     m.dirty |= D_SYSTEM;
+}
+
+void setEspNowUiConfig(const EspNowUiConfig& cfg) {
+    ModelLock lock;
+    Model& m = model();
+    m.espnowCfg = cfg;
+    m.dirty |= D_ESPNOW_CFG | D_SYSTEM;
+}
+
+void setWifiNetworks(const WifiNetwork* list, uint8_t count) {
+    ModelLock lock;
+    Model& m = model();
+    m.networkCount = count > 20 ? 20 : count;
+    if (list && m.networkCount) memcpy(m.networks, list, sizeof(WifiNetwork) * m.networkCount);
+    m.dirty |= D_WIFI_LIST;
+}
+
+void setWifiScanning(bool scanning) {
+    ModelLock lock;
+    if (model().scanning == scanning) return;
+    model().scanning = scanning;
+    model().dirty |= D_WIFI_LIST;
+}
+
+void setWifiJoin(WifiJoin state, const char* message) {
+    ModelLock lock;
+    Model& m = model();
+    m.join = state;
+    strlcpy(m.joinMessage, message ? message : "", sizeof(m.joinMessage));
+    m.dirty |= D_WIFI_JOIN;
 }
 
 }  // namespace hmi

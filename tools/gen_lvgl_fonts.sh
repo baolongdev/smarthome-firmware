@@ -28,7 +28,7 @@ text_font hmi_font_12_sb SemiBold 12 "$TEXT"
 text_font hmi_font_13_r  Regular  13 "$TEXT"
 text_font hmi_font_14_m  Medium   14 "$TEXT"
 text_font hmi_font_16_sb SemiBold 16 "$TEXT"
-text_font hmi_font_20_m  Medium   20 "0x20-0x7E,0xB0"
+text_font hmi_font_20_m  Medium   20 "$TEXT"
 text_font hmi_font_28_sb SemiBold 28 "$NUM"
 text_font hmi_font_64_sb SemiBold 64 "$NUM"
 
