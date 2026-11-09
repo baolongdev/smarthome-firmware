@@ -66,6 +66,10 @@
 #define TASMOTA_2_CHANNELS 1
 #define TASMOTA_POLL_MS 5000
 
+// OTA firmware update: HTTP URL of firmware.bin (set to your build server).
+// Empty = OTA disabled.
+#define OTA_FIRMWARE_URL ""
+
 // UTF-8 relay names (Control screen).
 #define RELAY_NAME_1 "Phòng khách"
 #define RELAY_NAME_2 "Điều hòa"
@@ -128,6 +132,14 @@
 #define OTA_ENABLED true
 #define OTA_PORT 3232
 #define OTA_PASSWORD "admin"
+
+// Auto OTA: when Wi-Fi connects, check for updates and auto-download if newer.
+// Set OTA_UPDATE_URL to your version manifest, e.g.
+//   https://your-server.com/firmware/version.json
+// Manifest format: {"version":"1.2.0","url":"https://.../firmware.bin","forced":false}
+#define OTA_UPDATE_URL ""
+#define OTA_AUTO_UPDATE true   // if true, auto download+install when newer version found
+#define OTA_CHECK_INTERVAL_MS 3600000  // check every 1 hour while Wi-Fi connected
 
 // ===== System =====
 #define SERIAL_BAUDRATE 115200

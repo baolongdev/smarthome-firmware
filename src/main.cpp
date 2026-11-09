@@ -1,11 +1,14 @@
 // ESP-NOW-only firmware: panel is ESP-NOW slave controlling local relays.
-// No Wi-Fi manager, no MQTT, no Tasmota HTTP, no network OTA.
+// Wi-Fi + optional HTTP OTA (OTA_FIRMWARE_URL in config.h).
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <WiFi.h>
 #include <esp_wifi.h>
+#include <esp_http_client.h>
+#include <esp_ota_ops.h>
+#include <esp_partition.h>
 #include <esp_task_wdt.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
@@ -19,6 +22,7 @@
 #include "storage.h"
 #include "wifi_manager.h"
 #include "espnow_master.h"
+#include "touch_gt911.h"
 
 LGFX display;
 
@@ -42,6 +46,9 @@ QueueHandle_t g_espQ = nullptr;
 QueueHandle_t g_espnowCfgQ = nullptr;
 QueueHandle_t g_netQ = nullptr;
 hmi::EspNowUiConfig g_pendingEspNowUi{};
+GT911Touch* g_mtGt911 = nullptr;
+bool g_mtTestActive = false;
+uint32_t g_mtTestEndMs = 0;
 
 void postApp(const AppMsg& m) { if (g_appQ) xQueueSend(g_appQ, &m, 0); }
 
@@ -132,6 +139,7 @@ bool parseMacUi(const char* text, uint8_t mac[6]);
 void applyEspNowUiConfig(const hmi::EspNowUiConfig& ui);
 
 void appTask(void*) {
+    esp_task_wdt_add(nullptr);
 #if HMI_SIMULATE_SENSORS
     uint32_t lastSim = 0;
     float sim[3] = {25.8f, 58.0f, 180.0f};
@@ -192,11 +200,13 @@ void appTask(void*) {
         }
         feedStatus(now);
         espnow::loop();
+        esp_task_wdt_reset();
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
 
 void consoleTask(void*) {
+    esp_task_wdt_add(nullptr);
     char line[120]; uint8_t len = 0;
     for (;;) {
         while (Serial.available()) {
@@ -218,12 +228,50 @@ void consoleTask(void*) {
                 } else Serial.println("usage: espnow mac AA:BB:CC:DD:EE:FF");
             }
             else if (!strcmp(line, "info")) Serial.printf("heap %u psram %u espnow %s\n", ESP.getFreeHeap(), ESP.getFreePsram(), espnow::statusText());
+            else if (!strcmp(line, "touch mt")) {
+                static GT911Touch gt911;
+                if (gt911.begin()) {
+                    g_mtGt911 = &gt911;
+                    g_mtTestActive = true;
+                    g_mtTestEndMs = millis() + 60000;
+                    Serial.println("MT test: 60s. Touch screen with up to 5 fingers. 'touch stop' to end.");
+                    Serial.println("Note: normal LVGL touch is paused during test.");
+                } else {
+                    Serial.println("MT test: GT911 init failed.");
+                }
+            }
+            else if (!strcmp(line, "touch stop")) { g_mtTestActive = false; Serial.println("MT test stopped."); }
             else if (!strncmp(line, "toggle ", 7)) postApp(AppMsg{AppCmd::RelayToggle, (uint8_t)(atoi(line + 7) - 1), false});
             else Serial.printf("? %s\n", line);
         }
+        // Multi-touch test: read all GT911 touch points and print to Serial.
+        if (g_mtTestActive && g_mtGt911 && millis() < g_mtTestEndMs) {
+            if (g_mtGt911->read()) {
+                int cnt = g_mtGt911->getTouchCount();
+                Serial.printf("MT %d points:", cnt);
+                for (int i = 0; i < cnt; i++) {
+                    auto p = g_mtGt911->getPoint(i);
+                    if (p.valid) Serial.printf(" [%d:%d,%d sz=%d]", p.id, p.x, p.y, p.size);
+                }
+                Serial.println();
+            }
+        } else if (g_mtTestActive) {
+            g_mtTestActive = false;
+            g_mtGt911 = nullptr;
+            Serial.println("MT test finished.");
+        }
+        esp_task_wdt_reset();
         vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
+
+// Forward declarations for OTA symbols used in netTask.
+TaskHandle_t g_otaTask = nullptr;
+bool g_otaRunning = false;
+char g_autoOtaUrl[256] = "";   // URL for auto-OTA download (set by version check)
+uint32_t g_lastOtaCheck = 0;   // last auto-OTA check time (ms)
+void otaTask(void*);
+bool checkOtaUpdate(char* outUrl, size_t outUrlSize);
 
 void netTask(void*) {
     wifimgr::begin(g_sdConfig);
@@ -236,6 +284,21 @@ void netTask(void*) {
         }
         wifimgr::loop();
         esp_task_wdt_reset();
+
+        // Auto OTA: when Wi-Fi connected, check for updates periodically.
+        if (OTA_AUTO_UPDATE && wifimgr::connected() && !g_otaRunning) {
+            uint32_t now = millis();
+            if (now - g_lastOtaCheck >= OTA_CHECK_INTERVAL_MS || g_lastOtaCheck == 0) {
+                g_lastOtaCheck = now;
+                char newUrl[256] = "";
+                if (checkOtaUpdate(newUrl, sizeof(newUrl))) {
+                    strlcpy(g_autoOtaUrl, newUrl, sizeof(g_autoOtaUrl));
+                    Serial.println("OTA: auto-update starting...");
+                    xTaskCreatePinnedToCore(otaTask, "ota", 8 * 1024, nullptr, 2, &g_otaTask, 0);
+                }
+            }
+        }
+
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
@@ -306,6 +369,242 @@ void onEspNowConfigSave(const hmi::EspNowUiConfig& cfg) {
     postApp(AppMsg{AppCmd::SaveEspNow, 0, false});
 }
 
+
+// ---------- OTA firmware update (HTTP -> OTA partition) ----------
+
+static void otaProgressCb(int pct) {
+    hmi::setUpdateProgress(static_cast<int8_t>(pct));
+}
+
+// Compare two semantic version strings (e.g. "1.1.0-ui" vs "1.2.0").
+// Returns 1 if a > b, -1 if a < b, 0 if equal.
+static int versionCompare(const char* a, const char* b) {
+    while (*a || *b) {
+        int na = 0, nb = 0;
+        while (*a && *a >= '0' && *a <= '9') { na = na * 10 + (*a - '0'); a++; }
+        while (*b && *b >= '0' && *b <= '9') { nb = nb * 10 + (*b - '0'); b++; }
+        if (na < nb) return -1;
+        if (na > nb) return 1;
+        if (*a) a++;
+        if (*b) b++;
+        while (*a && *a < '0' && *a != '\0') a++;
+        while (*b && *b < '0' && *b != '\0') b++;
+    }
+    return 0;
+}
+
+// Fetch version manifest from OTA_UPDATE_URL. If a newer version is available,
+// copies the download URL to outUrl and returns true.
+// Manifest: {"version":"1.2.0","url":"https://.../firmware.bin","forced":false}
+bool checkOtaUpdate(char* outUrl, size_t outUrlSize) {
+    const char* url = OTA_UPDATE_URL;
+    if (!url || !url[0]) return false;
+
+    esp_http_client_config_t cfg = {};
+    cfg.url = url;
+    cfg.timeout_ms = 10000;
+
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) return false;
+
+    esp_err_t err = esp_http_client_open(client, 0);
+    if (err != ESP_OK) {
+        esp_http_client_cleanup(client);
+        return false;
+    }
+
+    int status = esp_http_client_get_status_code(client);
+    int64_t contentLen = esp_http_client_get_content_length(client);
+    if (status < 200 || status >= 300 || contentLen <= 0 || contentLen > 2048) {
+        esp_http_client_cleanup(client);
+        return false;
+    }
+
+    char* buf = (char*)heap_caps_malloc(contentLen + 1, MALLOC_CAP_SPIRAM);
+    if (!buf) {
+        esp_http_client_cleanup(client);
+        return false;
+    }
+
+    int totalRead = 0;
+    while (totalRead < contentLen) {
+        int read = esp_http_client_read(client, buf + totalRead, contentLen - totalRead);
+        if (read <= 0) break;
+        totalRead += read;
+    }
+    buf[totalRead] = 0;
+    esp_http_client_cleanup(client);
+
+    ArduinoJson::JsonDocument doc;
+    auto err2 = deserializeJson(doc, buf);
+    heap_caps_free(buf);
+    if (err2) return false;
+
+    const char* newVersion = doc["version"] | "";
+    const char* newUrl = doc["url"] | "";
+    bool forced = doc["forced"] | false;
+
+    if (!newVersion[0] || !newUrl[0]) return false;
+
+    int cmp = versionCompare(newVersion, FIRMWARE_VERSION);
+    if (cmp <= 0 && !forced) return false;  // not newer and not forced
+
+    strlcpy(outUrl, newUrl, outUrlSize);
+    Serial.printf("OTA: new version %s available (current %s), url=%s\n", newVersion, FIRMWARE_VERSION, newUrl);
+    return true;
+}
+
+void otaTask(void*) {
+    const char* url = g_autoOtaUrl[0] ? g_autoOtaUrl : OTA_FIRMWARE_URL;
+    if (!url || !url[0]) {
+        Serial.println("OTA: OTA_FIRMWARE_URL not set");
+        hmi::setUpdateProgress(-1);
+        g_otaRunning = false;
+        vTaskDelete(nullptr);
+    }
+
+    if (wifimgr::connected() == false) {
+        Serial.println("OTA: Wi-Fi not connected");
+        hmi::setUpdateProgress(-1);
+        g_otaRunning = false;
+        vTaskDelete(nullptr);
+    }
+
+    esp_http_client_config_t cfg = {};
+    cfg.url = url;
+    cfg.timeout_ms = 15000;
+    cfg.keep_alive_enable = true;
+
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) {
+        Serial.println("OTA: failed to init http client");
+        hmi::setUpdateProgress(-1);
+        g_otaRunning = false;
+        vTaskDelete(nullptr);
+    }
+
+    esp_err_t err = esp_http_client_open(client, 0);
+    if (err != ESP_OK) {
+        Serial.printf("OTA: http open failed %s\n", esp_err_to_name(err));
+        esp_http_client_cleanup(client);
+        hmi::setUpdateProgress(-1);
+        g_otaRunning = false;
+        vTaskDelete(nullptr);
+    }
+
+    int status = esp_http_client_get_status_code(client);
+    int64_t contentLen = esp_http_client_get_content_length(client);
+    Serial.printf("OTA: HTTP %d contentLen=%lld\n", status, (long long)contentLen);
+    if (status < 200 || status >= 300) {
+        esp_http_client_cleanup(client);
+        hmi::setUpdateProgress(-1);
+        g_otaRunning = false;
+        vTaskDelete(nullptr);
+    }
+
+    // Sao chép firmware đang chạy vào /backup trước khi ghi OTA, để có thể khôi phục nếu cần.
+    storage::backupRunningFirmware();
+
+    const esp_partition_t* otaPart = esp_ota_get_next_update_partition(nullptr);
+    if (!otaPart) {
+        Serial.println("OTA: no OTA partition");
+        esp_http_client_cleanup(client);
+        hmi::setUpdateProgress(-1);
+        g_otaRunning = false;
+        vTaskDelete(nullptr);
+    }
+
+    esp_ota_handle_t otaHandle = 0;
+    err = esp_ota_begin(otaPart, OTA_SIZE_UNKNOWN, &otaHandle);
+    if (err != ESP_OK) {
+        Serial.printf("OTA: ota_begin failed %s\n", esp_err_to_name(err));
+        esp_http_client_cleanup(client);
+        hmi::setUpdateProgress(-1);
+        g_otaRunning = false;
+        vTaskDelete(nullptr);
+    }
+
+    char buf[1024];
+    int64_t totalWritten = 0;
+    int lastPct = -1;
+    bool ok = true;
+
+    while (true) {
+        int read = esp_http_client_read(client, buf, sizeof(buf));
+        if (read < 0) {
+            Serial.printf("OTA: read failed %s\n", esp_err_to_name(static_cast<esp_err_t>(read)));
+            ok = false;
+            break;
+        }
+        if (read == 0) break;
+
+        err = esp_ota_write(otaHandle, buf, read);
+        if (err != ESP_OK) {
+            Serial.printf("OTA: ota_write failed %s\n", esp_err_to_name(err));
+            ok = false;
+            break;
+        }
+
+        totalWritten += read;
+        if (contentLen > 0) {
+            int pct = static_cast<int>((totalWritten * 100) / contentLen);
+            if (pct != lastPct) {
+                lastPct = pct;
+                otaProgressCb(pct);
+                Serial.printf("OTA: %d%%\n", pct);
+            }
+        }
+        esp_task_wdt_reset();
+    }
+
+    if (ok) {
+        err = esp_ota_end(otaHandle);
+        if (err != ESP_OK) {
+            Serial.printf("OTA: ota_end failed %s\n", esp_err_to_name(err));
+            ok = false;
+        } else {
+            err = esp_ota_set_boot_partition(otaPart);
+            if (err != ESP_OK) {
+                Serial.printf("OTA: set_boot_partition failed %s\n", esp_err_to_name(err));
+                ok = false;
+            }
+        }
+    }
+
+    if (ok) {
+        otaProgressCb(100);
+        Serial.println("OTA: success, rebooting");
+        vTaskDelay(pdMS_TO_TICKS(500));
+        esp_restart();
+    } else {
+        esp_ota_abort(otaHandle);
+        hmi::setUpdateProgress(-1);
+        Serial.println("OTA: failed");
+        g_autoOtaUrl[0] = 0;  // clear so next check re-reads the manifest
+    }
+
+    esp_http_client_cleanup(client);
+    g_otaRunning = false;
+    vTaskDelete(nullptr);
+}
+
+void onFirmwareUpdate() {
+    if (g_otaRunning) return;
+    if (!OTA_FIRMWARE_URL[0]) {
+        Serial.println("OTA: disabled (no URL)");
+        hmi::setUpdateProgress(-1);
+        return;
+    }
+    if (!wifimgr::connected()) {
+        Serial.println("OTA: Wi-Fi not connected");
+        hmi::setUpdateProgress(-1);
+        return;
+    }
+    hmi::setUpdateProgress(0);
+    g_otaRunning = true;
+    xTaskCreatePinnedToCore(otaTask, "ota", 8 * 1024, nullptr, 2, &g_otaTask, 0);
+}
+
 }  // namespace
 
 void setup() {
@@ -320,6 +619,7 @@ void setup() {
     display.setBrightness(255);
 
     datalog::begin();
+    datalog::addEvent("Hệ thống khởi động");
     storage::begin();
     storage::loadConfig(g_sdConfig);
     g_sdConfig.espnow.enabled = true;
@@ -347,6 +647,7 @@ void setup() {
     cb.themeChanged = onThemeChanged; cb.darkModeChanged = onDarkModeChanged; cb.backlight = onBacklight;
     cb.wifiScan = onWifiScan; cb.wifiJoin = onWifiJoin;
     cb.espnowConfigSave = onEspNowConfigSave;
+    cb.firmwareUpdate = onFirmwareUpdate;
     hmi::setEspNowUiConfig(espNowUiConfig());
     hmi::begin(display, cb);
     storage::start();

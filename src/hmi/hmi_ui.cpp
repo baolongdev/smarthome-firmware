@@ -3171,14 +3171,16 @@ lv_obj_t* brandLockup(lv_obj_t* parent, bool screenSaver = false) {
     lv_obj_set_size(s, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(s, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(s, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_row(s, 2, 0);
+    lv_obj_set_style_pad_row(s, 1, 0);
 
     lv_obj_t* logo = lv_image_create(s);
     lv_image_set_src(logo, &nova_logo_132);
     lv_image_set_scale(logo, 130);  // ~51% of natural 292x384 (~149x195), keeps aspect ratio, leaves room for text
     if (screenSaver) return s;  // logo only, ~80% of 480 px screen
 
-    lv_obj_set_style_margin_bottom(logo, 6, 0);
+    lv_obj_set_style_margin_bottom(logo, 4, 0);
+    lv_obj_t* novaLand = label(s, &hmi_font_16_sb, text(), "NOVA\nLAND");
+    lv_obj_set_style_text_align(novaLand, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_t* top = label(s, &hmi_font_12_sb, muted(), "NOVA SMART HOME");
     lv_obj_set_style_text_letter_space(top, 1, 0);
     label(s, &hmi_font_16_sb, text(), "SMART HOME PANEL");
@@ -3187,7 +3189,7 @@ lv_obj_t* brandLockup(lv_obj_t* parent, bool screenSaver = false) {
     lv_obj_set_style_radius(bar, 2, 0);
     lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(bar, accent(), 0);  // Nova accent (current palette)
-    lv_obj_set_style_margin_ver(bar, 6, 0);
+    lv_obj_set_style_margin_ver(bar, 4, 0);
     lv_obj_t* slogan = label(s, &hmi_font_13_r, text(), "Novaland cho cuộc sống bừng sáng");
     lv_obj_set_width(slogan, 420);
     lv_obj_set_style_text_align(slogan, LV_TEXT_ALIGN_CENTER, 0);
@@ -3440,6 +3442,8 @@ void begin(LGFX& lcd, const Callbacks& cb) {
     s_lcd = &lcd;
     s_requests = xQueueCreate(8, sizeof(Request));
     xTaskCreatePinnedToCore(uiTask, "ui", 10 * 1024, nullptr, 3, nullptr, 1);
+    port::setSwipeDownCallback([]() { showSaver(true); });
+    port::setLongPressCallback([]() { Serial.println("Long press (2s): detected"); });
 }
 
 void showPage(uint8_t page) {

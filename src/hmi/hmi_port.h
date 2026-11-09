@@ -15,6 +15,13 @@ void begin(LGFX& lcd);
 // finger lifts, then onWake() runs.  Used by auto-dim.
 void armWakeGuard(void (*onWake)());
 
+// Set a callback invoked when the user swipes down (top -> bottom) past
+// `kSwipeDownThresholdPx` pixels without holding for kLongPressMs.
+void setSwipeDownCallback(void (*cb)());
+
+// Set a callback invoked when the user holds the touch for kLongPressMs.
+void setLongPressCallback(void (*cb)());
+
 // Testing: replace the touch panel with a synthetic vertical drag from (x, y0)
 // to (x, y1) over `ms`, then release.  Goes through the real LVGL indev path.
 void injectDrag(int16_t x, int16_t y0, int16_t y1, uint16_t ms);
