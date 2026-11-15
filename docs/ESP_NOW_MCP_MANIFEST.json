@@ -15,7 +15,11 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 3,
-            "description": "Relay 1 là quạt, relay 2 là đèn 1, relay 3 là đèn 2. Với op=set, bỏ channel để áp dụng cho cả ba relay."
+            "description": "Bắt buộc với lệnh set một relay. Relay 1 là quạt, relay 2 là đèn 1, relay 3 là đèn 2."
+          },
+          "all": {
+            "type": "boolean",
+            "description": "Chỉ dùng all=true khi người dùng nói rõ tất cả relay; không kết hợp với channel."
           },
           "state": {
             "type": "boolean",
@@ -30,7 +34,7 @@
         {"op": "relays"},
         {"op": "set", "channel": 1, "state": true},
         {"op": "set", "channel": 3, "state": false},
-        {"op": "set", "state": false}
+        {"op": "set", "all": true, "state": false}
       ]
     }
   ]

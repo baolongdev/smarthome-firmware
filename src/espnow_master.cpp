@@ -536,11 +536,21 @@ void handleMcpPacket(const RxPkt& packet) {
         return;
     }
     if (strcmp(name, "device") == 0 && arguments["channel"].isUnbound()) {
+        if (!arguments["all"].is<bool>() || !arguments["all"].as<bool>()) {
+            sendMcpError(packet.mac, requestId, responseMethod, -32602,
+                         "channel required; set all=true only to control every relay");
+            return;
+        }
         const uint8_t allRelays = static_cast<uint8_t>((1u << RELAY_COUNT) - 1u);
         if (!queueMcpRelayMaskSet(packet.mac, requestId, allRelays,
                                   arguments["state"].as<bool>())) {
             sendMcpError(packet.mac, requestId, responseMethod, -32000, "relay queue full");
         }
+        return;
+    }
+    if (strcmp(name, "device") == 0 && !arguments["all"].isUnbound()) {
+        sendMcpError(packet.mac, requestId, responseMethod, -32602,
+                     "all=true cannot be combined with a single relay channel");
         return;
     }
     if (!arguments["channel"].is<int>()) {
