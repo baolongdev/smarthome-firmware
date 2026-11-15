@@ -23,13 +23,12 @@ jobs:
 
       - name: Build firmware
         run: pio run -e esp32-4848s040
-        working-directory: ./firmware
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
           name: firmware-bin
-          path: firmware/.pio/build/esp32-4848s040/firmware.bin
+          path: .pio/build/esp32-4848s040/firmware.bin
           retention-days: 7
 
       - name: Create release (on main only)
@@ -41,6 +40,6 @@ jobs:
           body: |
             Auto-built firmware from commit ${{ github.sha }}
             Flash via: `pio run -t upload --upload-port /dev/ttyUSB0`
-          files: firmware/.pio/build/esp32-4848s040/firmware.bin
+          files: .pio/build/esp32-4848s040/firmware.bin
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
