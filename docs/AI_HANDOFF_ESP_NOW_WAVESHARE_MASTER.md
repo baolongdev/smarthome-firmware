@@ -2,8 +2,8 @@
 
 ## Vai trò thiết bị
 
-- **Master:** Waveshare ESP32-S3-Touch-LCD-1.85C, firmware ESP-IDF trong `/data/apps/aclab/nova-firmware`.
-- **Slave:** ESP32-4848S040 dùng USB-UART CH340, firmware PlatformIO trong repo hiện tại (`/data/apps/aclab/nova/firmware`).
+- **Master:** Waveshare ESP32-S3-Touch-LCD-1.85C, firmware ESP-IDF trong `/data/apps/aclab/nova/firmware`.
+- **Slave:** ESP32-4848S040 dùng USB-UART CH340, firmware PlatformIO trong repo hiện tại (`/data/apps/aclab/smarthome/firmware`).
 - MAC master đã xác nhận: `84:C7:BB:60:24:60`.
 - MAC slave đã xác nhận trước đó: `CC:68:C7:97:3C:D4`.
 - Cả hai đang dùng Wi-Fi `RD-SEAI_2.4G`, kênh 1. ESP-NOW dùng chung radio/kênh với Wi-Fi khi đã kết nối.

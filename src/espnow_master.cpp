@@ -297,7 +297,7 @@ bool sendMcpToolsList(const uint8_t mac[kMacLen], uint32_t requestId) {
     // writable through `configure`; board/radio identity stays read-only.
     char response[kMaxPayload + 1];
     const int len = snprintf(response, sizeof(response),
-        "{\"v\":1,\"type\":\"mcp_response\",\"method\":\"tools/list\",\"id\":%lu,\"result\":{\"tools\":[{\"name\":\"device\",\"inputSchema\":{\"properties\":{\"op\":{\"enum\":[\"info\",\"relays\",\"set\",\"config\",\"configure\"]}}}}]}}",
+        "{\"v\":1,\"type\":\"mcp_response\",\"method\":\"tools/list\",\"id\":%lu,\"result\":{\"tools\":[{\"name\":\"device\",\"inputSchema\":{\"properties\":{\"op\":{\"enum\":[\"info\",\"relays\",\"set\",\"config\",\"configure\"]}},\"required\":[\"op\"]}}]}}",
         static_cast<unsigned long>(requestId));
     return len > 0 && static_cast<size_t>(len) <= kMaxPayload &&
            sendMcpPayload(mac, response, static_cast<size_t>(len));

@@ -8,8 +8,8 @@
         "properties": {
           "op": {
             "type": "string",
-            "enum": ["info", "relays", "set"],
-            "description": "info: thông tin bo mạch/kết nối; relays: trạng thái các relay; set: bật hoặc tắt relay."
+            "enum": ["info", "relays", "set", "config", "configure"],
+            "description": "info: thông tin bo mạch/kết nối; relays: trạng thái các relay; config: cấu hình tên; configure: cập nhật tên; set: bật hoặc tắt relay."
           },
           "channel": {
             "type": "integer",
