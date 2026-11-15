@@ -98,6 +98,11 @@ struct Ui {
     lv_obj_t* wifiRefresh;
     lv_obj_t* wifiSpinner;
     char wifiRenderedSsid[33] = "";
+    // saved networks (auto-join list), above the scan results
+    lv_obj_t* savedCard = nullptr;
+    lv_obj_t* savedTitle = nullptr;
+    lv_obj_t* armedForget = nullptr;
+    lv_obj_t* armedForgetIcon = nullptr;
     // join sheet (full screen, above everything)
     lv_obj_t* sheet;
     lv_obj_t* sheetSsid;
@@ -159,6 +164,7 @@ Model& s_snap = newModel();
 
 void applySystem(const Model& m);
 void applyWifiList(const Model& m);
+void applySavedWifi(const Model& m);
 void openDetail(uint8_t topic, uint8_t back = P_SETTINGS);  // back: page the arrow returns to
 
 const char* const kRelayNames[RELAY_COUNT] = {RELAY_NAME_1, RELAY_NAME_2, RELAY_NAME_3};
@@ -324,7 +330,7 @@ void selectPage(uint8_t p) {
     // Keep dynamic pages quiet while hidden; refresh their cached model when
     // they become visible so scrolling does not compete with off-screen work.
     if (p == P_SETTINGS) applySystem(s_snap);
-    if (p == P_WIFI) applyWifiList(s_snap);
+    if (p == P_WIFI) { applySavedWifi(s_snap); applyWifiList(s_snap); }
     
 }
 
@@ -2178,7 +2184,7 @@ void applyDetail(const Model& m) {
             snprintf(a, sizeof(a), "%u thiết bị", (unsigned)s.espnowNodes);
             kv(c, "Thiết bị đã thấy", a, text());
             kv(c, "MAC panel", s.mac[0] ? s.mac : "–", muted());
-            kv(c, "Master MAC", m.espnowCfg.masterMac[0] ? m.espnowCfg.masterMac : ESPNOW_MASTER_MAC, m.espnowCfg.masterMac[0] ? text() : muted());
+            kv(c, "Master MAC", m.espnowCfg.masterMac[0] ? m.espnowCfg.masterMac : "Tự động tìm", m.espnowCfg.masterMac[0] ? text() : muted());
             kv(c, "PMK/LMK", (m.espnowCfg.pmk[0] && m.espnowCfg.lmk[0]) ? "Đã cấu hình" : "Dùng mặc định firmware", (m.espnowCfg.pmk[0] && m.espnowCfg.lmk[0]) ? muted() : warning());
             kv(c, "Chi tiết", s.espnowStatus[0] ? s.espnowStatus : "–", muted());
             closeCard(c);
@@ -2478,14 +2484,117 @@ void buildWifi(lv_obj_t* page) {
     lv_obj_set_style_width(scroll, 3, LV_PART_SCROLLBAR);
     lv_obj_set_style_bg_color(scroll, muted(), LV_PART_SCROLLBAR);
     lv_obj_set_style_bg_opa(scroll, LV_OPA_50, LV_PART_SCROLLBAR);
+
+    // --- "Mạng đã lưu" (auto-join list) ---
+    ui.savedTitle = sectionTitle(scroll, "MẠNG ĐÃ LƯU");
+    ui.savedCard = settingsCard(scroll);
+    lv_obj_set_style_pad_bottom(ui.savedCard, 8, 0);
+
+    // --- "Kết quả quét" (nearby networks) ---
+    sectionTitle(scroll, "MẠNG GẦN ĐÂY");
     ui.wifiList = settingsCard(scroll);
     lv_obj_set_style_pad_bottom(scroll, 8, 0);
+
+    applySavedWifi(s_snap);
+    applyWifiList(s_snap);
 }
 
 const char* signalIcon(int8_t rssi) {
     if (rssi >= -60) return ICON_WIFI;
     if (rssi >= -72) return ICON_WIFI_HIGH;
     return ICON_WIFI_LOW;
+}
+
+bool inSavedList(const Model& m, const char* ssid) {
+    for (uint8_t i = 0; i < m.savedCount; i++) {
+        if (strcmp(m.saved[i].ssid, ssid) == 0) return true;
+    }
+    return false;
+}
+
+// One row of the "Mạng đã lưu" card: auto-join switch + Forget.
+void buildSavedRow(lv_obj_t* card, const Model& m, uint8_t index, bool last) {
+    const SavedNetwork& s = m.saved[index];
+    const bool current = m.link == Link::Online && strcmp(s.ssid, m.sys.ssid) == 0;
+    lv_obj_t* r = box(card);
+    lv_obj_set_size(r, LV_PCT(100), 56);
+    lv_obj_set_flex_flow(r, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(r, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(r, 10, 0);
+    lv_obj_set_style_pad_hor(r, 12, 0);
+    if (!last) {
+        lv_obj_set_style_border_side(r, LV_BORDER_SIDE_BOTTOM, 0);
+        lv_obj_set_style_border_width(r, 1, 0);
+        lv_obj_set_style_border_color(r, elevated(), 0);
+    }
+    label(r, &hmi_icons_20, current ? accent() : muted(), signalIcon(m.sys.rssi));
+    lv_obj_t* col = flexCol(r, 0);
+    lv_obj_set_flex_grow(col, 1);
+    lv_obj_t* name = label(col, &hmi_font_14_m, text(), s.ssid);
+    lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+    label(col, &hmi_font_12_sb, current ? success() : muted(),
+          current ? "Đang kết nối" : (s.autoJoin ? "Tự động kết nối" : "Tắt tự động"));
+    lv_obj_t* sw = makeSwitch(r);
+    setChecked(sw, s.autoJoin);
+    lv_obj_add_event_cb(r, [](lv_event_t* e) {
+        const auto idx = static_cast<uint8_t>(reinterpret_cast<uintptr_t>(lv_event_get_user_data(e)));
+        if (idx >= s_snap.savedCount) return;
+        const bool on = !s_snap.saved[idx].autoJoin;
+        if (ui.cb.wifiAutoJoin) ui.cb.wifiAutoJoin(s_snap.saved[idx].ssid, on);
+    }, LV_EVENT_CLICKED, reinterpret_cast<void*>(static_cast<uintptr_t>(index)));
+    // Forget (trash) — arms on first tap, confirms on second.
+    lv_obj_t* forget = iconButton(r, ICON_TRASH, "Quên mạng");
+    lv_obj_set_size(forget, 40, 40);
+    lv_obj_set_style_bg_opa(forget, LV_OPA_TRANSP, 0);
+    lv_obj_t* fi = lv_obj_get_child(forget, 0);
+    lv_obj_add_event_cb(forget, [](lv_event_t* e) {
+        const auto idx = static_cast<uint8_t>(reinterpret_cast<uintptr_t>(lv_event_get_user_data(e)));
+        lv_obj_t* btn = static_cast<lv_obj_t*>(lv_event_get_target(e));
+        lv_obj_t* fi = lv_obj_get_child(btn, 0);
+        if (!lv_obj_has_state(btn, LV_STATE_CHECKED)) {
+            // Arm: only one row at a time shows the confirm (check) glyph.
+            if (ui.armedForget && ui.armedForget != btn) {
+                lv_obj_remove_state(ui.armedForget, LV_STATE_CHECKED);
+                lv_obj_t* otherIcon = lv_obj_get_child(ui.armedForget, 0);
+                if (otherIcon) {
+                    lv_label_set_text(otherIcon, ICON_TRASH);
+                    lv_obj_set_style_text_color(otherIcon, muted(), 0);
+                }
+            }
+            lv_obj_add_state(btn, LV_STATE_CHECKED);
+            lv_label_set_text(fi, ICON_CHECK);
+            lv_obj_set_style_text_color(fi, error(), 0);
+            ui.armedForget = btn;
+            ui.armedForgetIcon = fi;
+            return;
+        }
+        lv_obj_remove_state(btn, LV_STATE_CHECKED);
+        lv_label_set_text(fi, ICON_TRASH);
+        lv_obj_set_style_text_color(fi, muted(), 0);
+        if (ui.armedForget == btn) { ui.armedForget = nullptr; ui.armedForgetIcon = nullptr; }
+        if (idx < s_snap.savedCount && ui.cb.wifiForget) ui.cb.wifiForget(s_snap.saved[idx].ssid);
+    }, LV_EVENT_CLICKED, reinterpret_cast<void*>(static_cast<uintptr_t>(index)));
+}
+
+void applySavedWifi(const Model& m) {
+    if (!ui.savedCard) return;
+    ui.armedForget = nullptr;
+    ui.armedForgetIcon = nullptr;
+    lv_obj_t* scroll = lv_obj_get_parent(ui.savedCard);
+    const int32_t keepY = lv_obj_get_scroll_y(scroll);
+    struct Restore {
+        lv_obj_t* o; int32_t y;
+        ~Restore() { lv_obj_update_layout(o); lv_obj_scroll_to_y(o, y, LV_ANIM_OFF); }
+    } restore{scroll, keepY};
+    lv_obj_clean(ui.savedCard);
+    if (m.savedCount == 0) {
+        lv_obj_add_flag(ui.savedCard, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(ui.savedTitle, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    lv_obj_remove_flag(ui.savedCard, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(ui.savedTitle, LV_OBJ_FLAG_HIDDEN);
+    for (uint8_t i = 0; i < m.savedCount; i++) buildSavedRow(ui.savedCard, m, i, i + 1 < m.savedCount);
 }
 
 void applyWifiList(const Model& m) {
@@ -2506,39 +2615,38 @@ void applyWifiList(const Model& m) {
     } restore{wifiScroll, keepY};
     lv_obj_clean(ui.wifiList);
     const bool linked = m.link == Link::Online || m.link == Link::BrokerDown;
-    if (m.networkCount == 0) {
-        lv_obj_t* r = box(ui.wifiList);
-        lv_obj_set_size(r, LV_PCT(100), 56);
-        lv_obj_t* l = label(r, &hmi_font_14_m, muted(), m.scanning ? "Đang tìm mạng…" : "Không tìm thấy mạng nào");
-        lv_obj_center(l);
-        return;
-    }
+    uint8_t shown = 0;
     for (uint8_t i = 0; i < m.networkCount; i++) {
         const WifiNetwork& n = m.networks[i];
-        const bool current = linked && strcmp(n.ssid, m.sys.ssid) == 0;
+        if (inSavedList(m, n.ssid) && !n.saved) continue;  // already in "Mạng đã lưu"
         lv_obj_t* r = box(ui.wifiList);
         lv_obj_set_size(r, LV_PCT(100), 56);
         lv_obj_set_flex_flow(r, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(r, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_set_style_pad_column(r, 12, 0);
         lv_obj_set_style_pad_hor(r, 16, 0);
-        if (i + 1 < m.networkCount) {
+        if (shown + 1 < m.networkCount) {
             lv_obj_set_style_border_side(r, LV_BORDER_SIDE_BOTTOM, 0);
             lv_obj_set_style_border_width(r, 1, 0);
             lv_obj_set_style_border_color(r, elevated(), 0);
         }
         rowPressable(r);
-        label(r, &hmi_icons_20, current ? accent() : text(), signalIcon(n.rssi));
+        label(r, &hmi_icons_20, text(), signalIcon(n.rssi));
         lv_obj_t* name = label(r, &hmi_font_14_m, text(), n.ssid);
         lv_obj_set_flex_grow(name, 1);
         lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
-        if (current) label(r, &hmi_font_13_r, success(), "Đã kết nối");
-        else if (n.saved) label(r, &hmi_font_13_r, muted(), "Đã lưu");
         if (n.secure) label(r, &hmi_icons_20, muted(), ICON_LOCK);
         lv_obj_add_event_cb(r, [](lv_event_t* e) {
             const auto idx = static_cast<uint8_t>(reinterpret_cast<uintptr_t>(lv_event_get_user_data(e)));
             if (idx < s_snap.networkCount) openSheet(s_snap.networks[idx]);
         }, LV_EVENT_CLICKED, reinterpret_cast<void*>(static_cast<uintptr_t>(i)));
+        shown++;
+    }
+    if (shown == 0) {
+        lv_obj_t* r = box(ui.wifiList);
+        lv_obj_set_size(r, LV_PCT(100), 56);
+        lv_obj_t* l = label(r, &hmi_font_14_m, muted(), m.scanning ? "Đang tìm mạng…" : "Không có mạng mới");
+        lv_obj_center(l);
     }
 }
 
@@ -2916,7 +3024,8 @@ void saveEspNowEditor() {
     if (!ui.espnowMac) return;
     uint8_t mac[6];
     const char* macText = lv_textarea_get_text(ui.espnowMac);
-    if (!parseMacText(macText, mac)) {
+    const bool autoDiscover = !macText || !macText[0];
+    if (!autoDiscover && !parseMacText(macText, mac)) {
         if (ui.espnowStatus) {
             lv_label_set_text(ui.espnowStatus, "MAC không hợp lệ. Ví dụ: AA:BB:CC:DD:EE:FF");
             lv_obj_set_style_text_color(ui.espnowStatus, error(), 0);
@@ -2936,7 +3045,8 @@ void saveEspNowEditor() {
         return;
     }
     EspNowUiConfig cfg = s_snap.espnowCfg;
-    formatMacText(mac, cfg.masterMac);
+    if (autoDiscover) cfg.masterMac[0] = '\0';
+    else formatMacText(mac, cfg.masterMac);
     cfg.channel = (uint8_t)ch;
     if (pmk[0]) strlcpy(cfg.pmk, pmk, sizeof(cfg.pmk));
     if (lmk[0]) strlcpy(cfg.lmk, lmk, sizeof(cfg.lmk));
@@ -2993,12 +3103,12 @@ void buildEspNowEditor(lv_obj_t* scr) {
     lv_obj_add_event_cb(back, [](lv_event_t*) { closeEspNowEditor(); }, LV_EVENT_CLICKED, nullptr);
     label(head, &hmi_font_16_sb, text(), "Cấu hình ESP-NOW");
 
-    ui.espnowMac = espnowTextarea(top, "MAC master AA:BB:CC:DD:EE:FF", false, 17);
+    ui.espnowMac = espnowTextarea(top, "MAC master (để trống = tự tìm)", false, 17);
     ui.espnowChannel = espnowTextarea(top, "Kênh Wi-Fi/ESP-NOW (1-13)", false, 2);
     ui.espnowPmk = espnowTextarea(top, "PMK 32 hex (trống = giữ nguyên)", false, 32);
     ui.espnowLmk = espnowTextarea(top, "LMK 32 hex (trống = giữ nguyên)", false, 32);
 
-    ui.espnowStatus = label(top, &hmi_font_13_r, muted(), "Lưu vào /config.json và áp dụng ngay, không cần nạp lại firmware.");
+    ui.espnowStatus = label(top, &hmi_font_13_r, muted(), "Để trống MAC để tự tìm Master; lệnh điều khiển vẫn dùng unicast mã hóa. Lưu để áp dụng ngay.");
     lv_obj_set_width(ui.espnowStatus, LV_PCT(100));
     lv_label_set_long_mode(ui.espnowStatus, LV_LABEL_LONG_WRAP);
 
@@ -3386,6 +3496,7 @@ void tick() {
     if (d & D_AUTODIM) setChecked(ui.dimSwitch, m.autoDim);
     if ((d & D_SYSTEM) && ui.current == P_SETTINGS) applySystem(m);
     if (d & D_WIFI_LIST) applyWifiList(m);
+    if (d & D_SAVED_WIFI) { applySavedWifi(m); applyWifiList(m); }
     if (d & D_WIFI_JOIN) applyJoin(m);
     if (d & D_STORAGE) applyStorage(m);
     if (d & D_UPDATE) applyUpdate(m);

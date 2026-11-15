@@ -38,9 +38,8 @@ Preferences g_prefs;
 
 enum class AppCmd : uint8_t { RelayToggle, RelaySet, SaveBrightness, SaveAutoDim, SaveTheme, SaveDark, SaveEspNow };
 struct AppMsg { AppCmd cmd; uint8_t index; bool flag; };
-struct EspCmd { uint8_t type; uint8_t index; bool on; };
-enum class NetCmd : uint8_t { Scan, Join };
-struct NetMsg { NetCmd cmd; char ssid[33]; char pass[65]; };
+enum class NetCmd : uint8_t { Scan, Join, Forget, AutoJoin };
+struct NetMsg { NetCmd cmd; char ssid[33]; char pass[65]; bool flag = false; };
 QueueHandle_t g_appQ = nullptr;
 QueueHandle_t g_espQ = nullptr;
 QueueHandle_t g_espnowCfgQ = nullptr;
@@ -60,8 +59,13 @@ void setRelay(uint8_t i, bool on) {
     hmi::setRelay(i, on);
 }
 
-void applyEsp(const EspCmd& c) {
+void applyEsp(const espnow::RelayCommand& c) {
     if (c.type == 0) setRelay(c.index, !g_relay[c.index].load());
+    else if (c.type == 2) {
+        for (uint8_t i = 0; i < RELAY_COUNT; ++i) {
+            if (c.mask & (1u << i)) setRelay(i, c.on);
+        }
+    }
     else setRelay(c.index, c.on);
 }
 
@@ -162,8 +166,17 @@ void appTask(void*) {
                 if (g_espnowCfgQ && xQueueReceive(g_espnowCfgQ, &ecfg, 0) == pdTRUE) applyEspNowUiConfig(ecfg);
             }
         }
-        EspCmd ec;
-        while (xQueueReceive(g_espQ, &ec, 0) == pdTRUE) applyEsp(ec);
+        espnow::RelayCommand ec;
+        while (xQueueReceive(g_espQ, &ec, 0) == pdTRUE) {
+            applyEsp(ec);
+            if (ec.mcpResponse && ec.type == 2) {
+                espnow::sendRelayMaskSetResult(ec.peerMac, ec.requestId, ec.mask, ec.on);
+            } else if (ec.mcpResponse && ec.index < RELAY_COUNT) {
+                espnow::sendRelaySetResult(ec.peerMac, ec.requestId,
+                                           static_cast<uint8_t>(ec.index + 1),
+                                           g_relay[ec.index].load());
+            }
+        }
 
         const uint32_t now = millis();
 #if HMI_SIMULATE_SENSORS
@@ -178,7 +191,7 @@ void appTask(void*) {
         // Rotate greeting on the header room title every 30 s, never repeat back-to-back.
         static uint32_t lastGreeting = 0;
         static int8_t lastIdx = -1;
-        if (!lastGreeting || now - lastGreeting >= 30000) {
+        if (!espnow::hasCustomRoomName() && (!lastGreeting || now - lastGreeting >= 30000)) {
             lastGreeting = now;
             static const char* const greetings[] = {
                 "Xin chào, chúc một ngày tốt lành",
@@ -281,6 +294,8 @@ void netTask(void*) {
         while (g_netQ && xQueueReceive(g_netQ, &n, 0) == pdTRUE) {
             if (n.cmd == NetCmd::Scan) wifimgr::startScan();
             else if (n.cmd == NetCmd::Join) wifimgr::join(n.ssid, n.pass);
+            else if (n.cmd == NetCmd::Forget) wifimgr::forget(n.ssid);
+            else if (n.cmd == NetCmd::AutoJoin) wifimgr::setAutoJoin(n.ssid, n.flag);
         }
         wifimgr::loop();
         esp_task_wdt_reset();
@@ -309,12 +324,24 @@ void onAutoDimChanged(bool on) { postApp(AppMsg{AppCmd::SaveAutoDim, 0, on}); }
 void onThemeChanged(uint8_t i) { postApp(AppMsg{AppCmd::SaveTheme, i, false}); }
 void onDarkModeChanged(bool on) { postApp(AppMsg{AppCmd::SaveDark, 0, on}); }
 void onBacklight(uint8_t pct) { pct = constrain(pct, 0, 100); display.setBrightness(map(pct, 0, 100, HMI_BACKLIGHT_MIN_DUTY, 255)); }
-void onWifiScan() { if (g_netQ) { NetMsg m{NetCmd::Scan, {}, {}}; xQueueSend(g_netQ, &m, 0); } }
+void onWifiScan() { if (g_netQ) { NetMsg m{NetCmd::Scan, {}, {}, false}; xQueueSend(g_netQ, &m, 0); } }
 void onWifiJoin(const char* ssid, const char* pass) {
     if (!g_netQ) return;
-    NetMsg m{NetCmd::Join, {}, {}};
+    NetMsg m{NetCmd::Join, {}, {}, false};
     strlcpy(m.ssid, ssid ? ssid : "", sizeof(m.ssid));
     strlcpy(m.pass, pass ? pass : "", sizeof(m.pass));
+    xQueueSend(g_netQ, &m, 0);
+}
+void onWifiForget(const char* ssid) {
+    if (!g_netQ) return;
+    NetMsg m{NetCmd::Forget, {}, {}, false};
+    strlcpy(m.ssid, ssid ? ssid : "", sizeof(m.ssid));
+    xQueueSend(g_netQ, &m, 0);
+}
+void onWifiAutoJoin(const char* ssid, bool on) {
+    if (!g_netQ) return;
+    NetMsg m{NetCmd::AutoJoin, {}, {}, on};
+    strlcpy(m.ssid, ssid ? ssid : "", sizeof(m.ssid));
     xQueueSend(g_netQ, &m, 0);
 }
 
@@ -329,7 +356,6 @@ hmi::EspNowUiConfig espNowUiConfig() {
         snprintf(c.masterMac, sizeof(c.masterMac), "%02X:%02X:%02X:%02X:%02X:%02X", m[0], m[1], m[2], m[3], m[4], m[5]);
         if (!strcmp(c.masterMac, "00:00:00:00:00:00")) c.masterMac[0] = 0;
     }
-    if (!c.masterMac[0]) strlcpy(c.masterMac, ESPNOW_MASTER_MAC, sizeof(c.masterMac));
     return c;
 }
 
@@ -354,6 +380,9 @@ void applyEspNowUiConfig(const hmi::EspNowUiConfig& ui) {
     if (parseMacUi(ui.masterMac, mac)) {
         for (int i = 0; i < 6; i++) ec.peers[0][i] = mac[i];
         ec.peerCount = 1;
+    } else {
+        memset(ec.peers, 0, sizeof(ec.peers));
+        ec.peerCount = 0;  // blank MAC enables automatic ESP-NOW discovery
     }
     g_sdConfig.espnow = ec;
     const bool ok = storage::saveEspNowConfig(ec);
@@ -626,7 +655,6 @@ void setup() {
     if (!g_sdConfig.espnow.channel) g_sdConfig.espnow.channel = ESPNOW_CHANNEL;
     if (!g_sdConfig.espnow.pmk[0]) strlcpy(g_sdConfig.espnow.pmk, ESPNOW_PMK, sizeof(g_sdConfig.espnow.pmk));
     if (!g_sdConfig.espnow.lmk[0]) strlcpy(g_sdConfig.espnow.lmk, ESPNOW_LMK, sizeof(g_sdConfig.espnow.lmk));
-    if (g_sdConfig.espnow.peerCount == 0) g_sdConfig.espnow.peerCount = 1;  // parsed from ESPNOW_MASTER_MAC in begin()
 
     g_prefs.begin("hmi", false);
     hmi::setBrightness(g_prefs.getUChar("bright", 80));
@@ -634,10 +662,11 @@ void setup() {
     hmi::setTheme(g_prefs.getUChar("theme", 0));
     hmi::setDarkMode(g_prefs.getBool("dark", true));
     hmi::setLink(hmi::Link::Connecting);
+    espnow::loadDeviceConfig();
 
     esp_task_wdt_init(10, true);
     g_appQ = xQueueCreate(24, sizeof(AppMsg));
-    g_espQ = xQueueCreate(24, sizeof(EspCmd));
+    g_espQ = xQueueCreate(24, sizeof(espnow::RelayCommand));
     g_espnowCfgQ = xQueueCreate(4, sizeof(hmi::EspNowUiConfig));
     g_netQ = xQueueCreate(8, sizeof(NetMsg));
     espnow::setCommandQueue(g_espQ);
@@ -646,6 +675,7 @@ void setup() {
     cb.relayToggle = onRelayToggle; cb.brightnessChanged = onBrightnessChanged; cb.autoDimChanged = onAutoDimChanged;
     cb.themeChanged = onThemeChanged; cb.darkModeChanged = onDarkModeChanged; cb.backlight = onBacklight;
     cb.wifiScan = onWifiScan; cb.wifiJoin = onWifiJoin;
+    cb.wifiForget = onWifiForget; cb.wifiAutoJoin = onWifiAutoJoin;
     cb.espnowConfigSave = onEspNowConfigSave;
     cb.firmwareUpdate = onFirmwareUpdate;
     hmi::setEspNowUiConfig(espNowUiConfig());
@@ -658,7 +688,7 @@ void setup() {
 
     xTaskCreatePinnedToCore(appTask, "app", 5 * 1024, nullptr, 2, nullptr, 1);
     xTaskCreatePinnedToCore(consoleTask, "console", 3 * 1024, nullptr, 1, nullptr, 0);
-    Serial.printf("Ready: Wi-Fi manager + ESP-NOW slave. master=%s\n", ESPNOW_MASTER_MAC);
+    Serial.println("Ready: Wi-Fi manager + ESP-NOW slave. Master MAC auto-discovery enabled.");
 }
 
 void loop() { vTaskDelete(nullptr); }

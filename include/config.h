@@ -13,9 +13,11 @@
 // ===== ESP-NOW (panel = slave, receives relay commands from master) =====
 #define ESPNOW_ENABLED true
 #define ESPNOW_CHANNEL 1  // used when Wi-Fi is not connected; STA-connected ESP-NOW follows Wi-Fi channel
+#define ESPNOW_SLAVE_ONLY true  // slave radio is reserved for ESP-NOW; master keeps Wi-Fi
+#define ESPNOW_SLAVE_CHANNEL_SCAN true  // find and follow the master's channel
 #define ESPNOW_PMK "00112233445566778899AABBCCDDEEFF"
 #define ESPNOW_LMK "00112233445566778899AABBCCDDEEFF"
-// Master MAC that may control this panel. Set to your real master MAC.
+// Optional pinned Master MAC. Leave as a placeholder/blank for auto-discovery.
 #define ESPNOW_MASTER_MAC "AA:BB:CC:DD:EE:FF"
 
 // ===== Display Configuration (ESP32-4848S040) =====
@@ -70,10 +72,10 @@
 // Empty = OTA disabled.
 #define OTA_FIRMWARE_URL ""
 
-// UTF-8 relay names (Control screen).
-#define RELAY_NAME_1 "Phòng khách"
-#define RELAY_NAME_2 "Điều hòa"
-#define RELAY_NAME_3 "Ổ cắm"
+// Relay labels are also advertised through the ESP-NOW MCP device.relays tool.
+#define RELAY_NAME_1 "Quạt"
+#define RELAY_NAME_2 "Đèn 1"
+#define RELAY_NAME_3 "Đèn 2"
 
 // ===== GPIO Pin Definitions =====
 // RGB Interface (parallel 16-bit)

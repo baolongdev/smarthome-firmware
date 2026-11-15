@@ -24,14 +24,14 @@ Tài liệu mô tả giao thức liên lạc giữa **Nova Smart Home Panel** (E
 ### Vai trò
 | Vai trò | Mô tả |
 |---------|-------|
-| **Master** | Thiết bị khác điều khiển (nút bấm, gateway, altra panel). Gửi lệnh, nhận telemetry. |
-| **Slave** | Nova Panel. Nhận lệnh điều khiển relay, phản hồi trạng thái, gửi telemetry định kỳ. |
+| **Master** | Waveshare ESP32-S3-Touch-LCD-1.85C chạy XiaoZhi/ESP-IDF. Tự khám phá slave, gọi MCP và nhận trạng thái. |
+| **Slave** | ESP32-4848S040 nối qua CH340 (repo firmware này). Nhận lệnh relay, trả lời MCP và gửi telemetry. |
 
 ### Khung giao tiếp
 - **Kênh**: ESP-NOW trên kênh 1–13 (mặc định 1). Khi Wi-Fi bật (NTP), ESP-NOW tự follows kênh của router.
-- **Bảo mật**: PMK (Pairwise Master Key) + LMK (Link Master Key), khóa 16 byte hex. Mọi peer đều được thêm với mã hóa `encrypt = true`.
-- **Peer allowlist**: Danh sách MAC master được phép. Nếu allowlist trống → chấp nhận mọi peer đã mã hóa.
-- **Kích thước payload tối đa**: 200 bytes/frame (ESP-NOW limit ~250 byte, trừ phần header).
+- **Bảo mật**: PMK (Pairwise Master Key) + LMK (Link Master Key), khóa 16 byte hex. Peer điều khiển được thêm với mã hóa `encrypt = true`.
+- **Peer allowlist**: Danh sách MAC master được phép. Nếu allowlist trống → chỉ chấp nhận Master đã xác thực beacon khám phá bằng PMK trong phiên hiện tại.
+- **Kích thước payload tối đa**: 250 bytes/frame cho payload ứng dụng ESP-NOW v1.
 
 ---
 
@@ -189,15 +189,15 @@ Cấu hình được lưu trong `/config.json` (SD card) và NVS (`espnow` names
   "espnow": {
     "enabled": true,
     "channel": 1,
-    "pmk": "00112233445566778899AABBCCDDEEFF",
-    "lmk": "00112233445566778899AABBCCDDEEFF",
+    "pmk": "<shared 32-hex-character key>",
+    "lmk": "<shared 32-hex-character key>",
     "peerCount": 1,
     "peers": [["AA","BB","CC","DD","EE","FF"]]
   }
 }
 ```
 
-Trường `peers` là danh sách MAC master được phép điều khiển. Nếu `peerCount = 0` → chấp nhận mọi peer đã mã hóa.
+Trường `peers` là danh sách MAC master được phép điều khiển. Nếu `peerCount = 0` → dùng cơ chế khám phá tự động đã xác thực bằng PMK.
 
 ---
 
@@ -235,18 +235,44 @@ uint8_t build_relay_set(uint8_t id, uint8_t on, uint16_t seq, uint8_t *out, size
 }
 ```
 
+## 10. MCP qua ESP-NOW
+
+Master khám phá slave bằng beacon xác thực, sau đó dùng `espnow.devices` để lấy `device_id` (MAC). Gọi `espnow.list_tools` để lấy manifest MCP của slave, rồi `espnow.call` với đúng `device_id`, tên tool và JSON arguments. Manifest đầy đủ được lưu tại [`ESP_NOW_MCP_MANIFEST.json`](ESP_NOW_MCP_MANIFEST.json); phần manifest gửi qua radio được rút gọn để nằm trong giới hạn payload ESP-NOW.
+
+Slave công bố một tool `device` với ba thao tác:
+
+| `op` | Tham số | Kết quả |
+|---|---|---|
+| `info` | Chỉ `op` | Tên vị trí, board, vai trò, kênh ESP-NOW, Wi-Fi/RSSI, uptime và nguồn dữ liệu cảm biến. |
+| `relays` | Chỉ `op` | Danh sách relay 1 (quạt), relay 2 (đèn 1), relay 3 (đèn 2), cùng trạng thái thực tế. |
+| `set` | `channel` 1–3 và `state` boolean; bỏ `channel` để áp dụng tất cả | Đặt một hoặc cả ba relay trong một batch; slave xác nhận sau khi cập nhật xong. |
+
+Ví dụ `espnow.call`:
+
+```json
+{"device_id":"CC:68:C7:97:3C:D4","tool":"device","arguments_json":"{\"op\":\"relays\"}"}
+```
+
+```json
+{"device_id":"CC:68:C7:97:3C:D4","tool":"device","arguments_json":"{\"op\":\"set\",\"channel\":1,\"state\":true}"}
+```
+
+Lệnh cũ `relay.set` vẫn được slave chấp nhận để tương thích firmware/client đã phát hành trước đó. `HMI_SIMULATE_SENSORS` hiện bật trên CH340; manifest không công bố số đo cảm biến giả như dữ liệu thật.
+
+Master có thêm `espnow.inspect` để tự hỏi slave và tổng hợp `info`, danh sách actuator có tên/trạng thái, cùng MCP tools/schema. `espnow.control` nhận tên actuator tự nhiên và hành động bật/tắt, tự dò tên đến channel rồi gửi lệnh; nếu tên không có trong capability list hoặc khớp nhiều thiết bị, tool báo lại tên khả dụng/thông tin cần làm rõ thay vì tự chọn channel.
+
 ---
 
-## 10. Mở rộng trong tương lai
+## 11. Mở rộng trong tương lai
 
 - Thêm loại tin nhắn mới chỉ cần gán giá trị `type` mới trong khoảng trống (0x10–0x7F cho lệnh, 0x90–0xEF cho telemetry).
 - Thêm trường vào payload: tăng `len`, struct mới, Slave kiểm tra `len` trước khi đọc.
-- Hỗ trợ fragmentation: nếu payload > 200 byte, chia thành nhiều khung có cùng `seq` và chỉ số đoạn (thêm trong `flags` hoặc reserved byte).
+- Hỗ trợ fragmentation: nếu payload vượt 250 byte, chia thành nhiều khung có cùng `seq` và chỉ số đoạn (thêm trong `flags` hoặc reserved byte).
 - Mã hóa end-to-end bổ sung ngoài ESP-NOW LMK nếu cần bảo mật cao hơn.
 
 ---
 
-## 11. Tóm tắt cổng giao tiếp
+## 12. Tóm tắt cổng giao tiếp
 
 | Kênh | Mục đích | Tần suất | Bảo mật |
 |------|----------|----------|---------|
@@ -254,3 +280,33 @@ uint8_t build_relay_set(uint8_t id, uint8_t on, uint16_t seq, uint8_t *out, size
 | Wi-Fi STA | NTP giờ (GMT+7) | Khi kết nối, configTime | WPA2 router |
 | HTTP (tùy chọn) | OTA firmware | Yêu cầu người dùng | URL server tuỳ chọn |
 | Serial UART | Debug, config thủ công | Yêu cầu | Objekt cục bộ |
+
+---
+
+## 13. MCP JSON cho Master Nova
+
+Ngoài frame nhị phân cũ, slave CH340 nhận payload JSON UTF-8 MCP. Hai định dạng cùng chạy trên ESP-NOW; frame bắt đầu bằng `{` được xử lý như MCP, frame còn lại vẫn đi qua bộ giải mã nhị phân hiện tại.
+
+Yêu cầu Master → Slave:
+
+```json
+{"v":1,"type":"mcp_request","id":17,"method":"tools/call","params":{"name":"device","arguments":{"op":"set","channel":2,"state":true}}}
+```
+
+Slave hỗ trợ:
+
+- `tools/list`: công bố tool `device`. Manifest chuẩn có tại [`ESP_NOW_MCP_MANIFEST.json`](ESP_NOW_MCP_MANIFEST.json); bản gửi qua radio được rút gọn để nằm trong giới hạn 250 byte.
+- `tools/call` với `name="device"`: `op="info"` đọc thông tin bo mạch/kết nối, `op="relays"` đọc tên và trạng thái relay, `op="set"` với `channel` 1–3 đặt một relay; bỏ `channel` để đặt cả ba relay cùng lúc. `state` là boolean.
+- Khi app task đã cập nhật GPIO và HMI, Slave trả `mcp_response` cùng `id` gốc và trạng thái thực tế của relay. Nếu tham số sai hoặc hàng đợi đầy, Slave trả lỗi MCP tương ứng.
+
+Master có `espnow.devices`, `espnow.list_tools`, và `espnow.call`. Dùng `espnow.devices` để lấy MAC slave; đọc danh sách công cụ bằng `espnow.list_tools`, sau đó gọi tool theo manifest với `espnow.call`.
+
+Ví dụ gọi trực tiếp từ Master:
+
+```json
+{"device_id":"CC:68:C7:97:3C:D4","tool":"device","arguments_json":"{\"op\":\"set\",\"channel\":2,\"state\":true}"}
+```
+
+Giới hạn payload 250 byte áp dụng cho yêu cầu lẫn phản hồi MCP. Master phát beacon `NOVA_DISCOVERY_V1` và slave trả beacon `GUITION_SLAVE_V1` để hai bên tự biết MAC; các beacon không chứa lệnh hay khóa. Khi thấy master, slave tự thêm peer bằng LMK. MCP request, phản hồi và lệnh dùng unicast mã hóa PMK/LMK. Tool `relay.set` cũ vẫn được chấp nhận để tương thích.
+
+Guition slave quảng bá MCP metadata: relay 1 là quạt, relay 2 là đèn 1, relay 3 là đèn 2. Các nhãn trên giao diện relay dùng cùng tên.
