@@ -21,6 +21,7 @@ enum Dirty : uint32_t {
     D_ESPNOW_CFG = 1u << 9,
     D_WIFI_LIST = 1u << 10,
     D_WIFI_JOIN = 1u << 11,
+    D_SAVED_WIFI = 1u << 18,
     D_STORAGE = 1u << 12,
     D_UPDATE = 1u << 13,
     D_ROOM = 1u << 14,
@@ -58,6 +59,8 @@ struct Model {
     EspNowUiConfig espnowCfg;
     WifiNetwork networks[20];
     uint8_t networkCount = 0;
+    SavedNetwork saved[kMaxSavedWifi];
+    uint8_t savedCount = 0;
     bool scanning = false;
     WifiJoin join = WifiJoin::Idle;
     char joinMessage[48] = "";

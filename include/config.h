@@ -13,9 +13,11 @@
 // ===== ESP-NOW (panel = slave, receives relay commands from master) =====
 #define ESPNOW_ENABLED true
 #define ESPNOW_CHANNEL 1  // used when Wi-Fi is not connected; STA-connected ESP-NOW follows Wi-Fi channel
+#define ESPNOW_SLAVE_ONLY true  // slave radio is reserved for ESP-NOW; master keeps Wi-Fi
+#define ESPNOW_SLAVE_CHANNEL_SCAN true  // find and follow the master's channel
 #define ESPNOW_PMK "00112233445566778899AABBCCDDEEFF"
 #define ESPNOW_LMK "00112233445566778899AABBCCDDEEFF"
-// Master MAC that may control this panel. Set to your real master MAC.
+// Optional pinned Master MAC. Leave as a placeholder/blank for auto-discovery.
 #define ESPNOW_MASTER_MAC "AA:BB:CC:DD:EE:FF"
 
 // ===== Display Configuration (ESP32-4848S040) =====
@@ -66,10 +68,14 @@
 #define TASMOTA_2_CHANNELS 1
 #define TASMOTA_POLL_MS 5000
 
-// UTF-8 relay names (Control screen).
-#define RELAY_NAME_1 "Phòng khách"
-#define RELAY_NAME_2 "Điều hòa"
-#define RELAY_NAME_3 "Ổ cắm"
+// OTA firmware update: HTTP URL of firmware.bin (set to your build server).
+// Empty = OTA disabled.
+#define OTA_FIRMWARE_URL ""
+
+// Relay labels are also advertised through the ESP-NOW MCP device.relays tool.
+#define RELAY_NAME_1 "Quạt"
+#define RELAY_NAME_2 "Đèn 1"
+#define RELAY_NAME_3 "Đèn 2"
 
 // ===== GPIO Pin Definitions =====
 // RGB Interface (parallel 16-bit)
@@ -128,6 +134,14 @@
 #define OTA_ENABLED true
 #define OTA_PORT 3232
 #define OTA_PASSWORD "admin"
+
+// Auto OTA: when Wi-Fi connects, check for updates and auto-download if newer.
+// Set OTA_UPDATE_URL to your version manifest, e.g.
+//   https://your-server.com/firmware/version.json
+// Manifest format: {"version":"1.2.0","url":"https://.../firmware.bin","forced":false}
+#define OTA_UPDATE_URL ""
+#define OTA_AUTO_UPDATE true   // if true, auto download+install when newer version found
+#define OTA_CHECK_INTERVAL_MS 3600000  // check every 1 hour while Wi-Fi connected
 
 // ===== System =====
 #define SERIAL_BAUDRATE 115200

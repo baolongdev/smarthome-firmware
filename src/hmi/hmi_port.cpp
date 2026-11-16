@@ -16,8 +16,17 @@ constexpr int kBufLines = 64;
 
 LGFX* s_lcd = nullptr;
 void (*s_onWake)() = nullptr;
+void (*s_swipeDownCb)() = nullptr;
+void (*s_longPressCb)() = nullptr;
 bool s_guard = false;
 bool s_swallowing = false;
+int16_t s_swipeStartY = 0;
+uint32_t s_touchDownMs = 0;
+bool s_swipeTracking = false;
+bool s_longPressFired = false;
+
+constexpr int16_t kSwipeDownThresholdPx = 160;  // vertical distance to trigger saver (less sensitive)
+constexpr uint32_t kLongPressMs = 5000;         // hold time for press action
 
 struct SynthDrag {
     int16_t x, y0, y1;
@@ -66,31 +75,39 @@ void touchCb(lv_indev_t*, lv_indev_data_t* data) {
     uint16_t x = 0, y = 0;
     const bool down = s_lcd->getTouch(&x, &y) > 0;
 
-    if (s_guard && down) {  // first touch after dimming only wakes
+    // Guarded (dimmed) state: first touch wakes the screen AND registers as a press.
+    if (s_guard && down) {
         s_guard = false;
-        s_swallowing = true;
+        if (s_onWake) s_onWake();
     }
-    if (s_swallowing) {
-        data->state = LV_INDEV_STATE_RELEASED;
-        if (!down) {
-            s_swallowing = false;
-            if (s_onWake) s_onWake();
+
+    static bool wasDown = false;
+
+    if (down != wasDown) {
+        if (down) {
+            Serial.printf("TOUCH DOWN X=%u Y=%u\n", x, y);
+            data->point.x = x;
+            data->point.y = y;
+            data->state = LV_INDEV_STATE_PRESSED;
+            lv_display_trigger_activity(nullptr);
+        } else {
+            Serial.println("TOUCH UP");
+            data->state = LV_INDEV_STATE_RELEASED;
+            lv_display_trigger_activity(nullptr);
         }
+        wasDown = down;
         return;
     }
-    static bool wasDown = false;
-    if (down != wasDown) {
-        if (down) Serial.printf("TOUCH DOWN X=%u Y=%u\n", x, y);
-        else Serial.println("TOUCH UP");
-        wasDown = down;
-    }
+
+    // While finger stays down — keep sending current coordinates so LVGL can drag/scroll.
     if (down) {
         data->point.x = x;
         data->point.y = y;
         data->state = LV_INDEV_STATE_PRESSED;
-    } else {
-        data->state = LV_INDEV_STATE_RELEASED;
+        return;
     }
+
+    data->state = LV_INDEV_STATE_RELEASED;
 }
 
 #if defined(HMI_BTN_PREV_PIN) && defined(HMI_BTN_NEXT_PIN) && defined(HMI_BTN_OK_PIN)
@@ -153,6 +170,14 @@ void injectDrag(int16_t x, int16_t y0, int16_t y1, uint16_t ms) {
 void armWakeGuard(void (*onWake)()) {
     s_onWake = onWake;
     s_guard = true;
+}
+
+void setSwipeDownCallback(void (*cb)()) {
+    s_swipeDownCb = cb;
+}
+
+void setLongPressCallback(void (*cb)()) {
+    s_longPressCb = cb;
 }
 
 void copyFramebuffer(uint8_t* dst) {

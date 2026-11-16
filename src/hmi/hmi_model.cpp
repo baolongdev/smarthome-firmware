@@ -196,6 +196,14 @@ void setWifiNetworks(const WifiNetwork* list, uint8_t count) {
     m.dirty |= D_WIFI_LIST;
 }
 
+void setSavedWifi(const SavedNetwork* list, uint8_t count) {
+    ModelLock lock;
+    Model& m = model();
+    m.savedCount = count > kMaxSavedWifi ? kMaxSavedWifi : count;
+    if (list && m.savedCount) memcpy(m.saved, list, sizeof(SavedNetwork) * m.savedCount);
+    m.dirty |= D_SAVED_WIFI;
+}
+
 void setWifiScanning(bool scanning) {
     ModelLock lock;
     if (model().scanning == scanning) return;

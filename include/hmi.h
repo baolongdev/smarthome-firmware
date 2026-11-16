@@ -18,6 +18,13 @@ struct WifiNetwork {
     bool saved = false;  // password already known (NVS, config.json or config.h)
 };
 
+// A network the panel has been given a password for and tries to re-join
+// automatically whenever it is in range (NVS "wifi" namespace, config.json).
+struct SavedNetwork {
+    char ssid[33];
+    bool autoJoin = true;  // try this network first at boot / after a drop
+};
+
 enum class WifiJoin : uint8_t { Idle, Connecting, Connected, Failed };
 
 // Everything the Settings rows and their detail pages show.  Sent by the net
@@ -85,6 +92,8 @@ constexpr uint8_t kMaxDevices = 4;
 constexpr uint8_t kMaxChannels = 8;
 struct DeviceInfo { char name[24]; char key[16]; uint8_t channels; char labels[kMaxChannels][20]; };
 
+constexpr uint8_t kMaxSavedWifi = 8;
+
 constexpr uint8_t kMaxFiles = 32;
 constexpr uint16_t kImageMax = 432;
 struct FileEntry { char name[40]; uint32_t size; bool dir; };
@@ -113,6 +122,8 @@ struct Callbacks {
     void (*fileDelete)(const char* path) = nullptr;
     void (*wifiScan)() = nullptr;                     // Wi-Fi screen opened / refresh tapped
     void (*wifiJoin)(const char* ssid, const char* password) = nullptr;
+    void (*wifiForget)(const char* ssid) = nullptr;    // remove a saved network, stop auto-join
+    void (*wifiAutoJoin)(const char* ssid, bool on) = nullptr;  // enable/disable auto-join per SSID
     void (*espnowConfigSave)(const EspNowUiConfig& cfg) = nullptr;
 };
 
@@ -133,6 +144,9 @@ void setEspNowUiConfig(const EspNowUiConfig& cfg);
 void setWifiNetworks(const WifiNetwork* list, uint8_t count);  // scan result
 void setWifiScanning(bool scanning);
 void setWifiJoin(WifiJoin state, const char* message);         // Connected: IP, Failed: reason
+// Known networks the panel auto-joins (in priority order).  Sent whenever the
+// list changes; the Wi-Fi screen shows it above the scan results.
+void setSavedWifi(const SavedNetwork* list, uint8_t count);
 void setRoomName(const char* name);
 
 void setStorage(const StorageInfo& info);
