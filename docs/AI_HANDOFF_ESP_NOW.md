@@ -6,7 +6,7 @@ Cho Master Nova tự phát beacon khám phá có xác thực, nhận phản hồ
 
 ## Hai project và thiết bị
 
-- **Slave Guition:** `/data/apps/aclab/smarthome/firmware`, PlatformIO env `esp32-4848s040`, ESP32-S3 480×480, cổng USB-UART CH340 `/dev/ttyUSB0`, MAC đã đọc được `cc:68:c7:97:3c:d4`.
+- **Slave Guition:** `/data/apps/aclab/nova/smarthome/firmware`, PlatformIO env `esp32-4848s040`, ESP32-S3 480×480, cổng USB-UART CH340 `/dev/ttyUSB0`, MAC đã đọc được `cc:68:c7:97:3c:d4`.
 - **Master Nova:** `/data/apps/aclab/nova/firmware`, profile `waveshare/esp32-s3-touch-lcd-1.85c`, cổng USB JTAG `/dev/ttyACM0`, MAC `84:c7:bb:60:24:60`.
 
 ## Cấu hình đã đối chiếu (2026-11-14)
